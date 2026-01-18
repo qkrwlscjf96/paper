@@ -4,10 +4,12 @@ import pandas as pd
 from pathlib import Path
 import numpy as np
 from itertools import combinations
+from scipy.stats import ttest_ind, mannwhitneyu
 
 #base_path = Path(__file__).parent
-base_path = Path('C:/Users/wlscj/coding/paper/src').parent
-data_path = base_path / '1.data'
+base_path = Path("/Users/danielpark/Documents/서강대/pgm/논문/src").parent
+data_path = base_path / 'data'
+
 #xlsx_files = list(data_path.glob('*.xlsx'))
 csv_files = list(data_path.glob('*.csv'))
 
@@ -37,8 +39,34 @@ groups = dict(tuple(df2.groupby(["date", "TAG"])))
 check_cols = ["MELT_TEMP","MOTORSPEED","MELT_WEIGHT"]
 
 # ---------------------------
-# 3. Cohen's d 함수
+# 3. 통계 함수 정의
 # ---------------------------
+
+def t_test(x, y):
+    x = x.dropna()
+    y = y.dropna()
+
+    if len(x) < 2 or len(y) < 2:
+        return np.nan
+
+    stat, p = ttest_ind(x, y, equal_var=False)  # Welch
+    return p
+
+def wilcoxon_rank_sum(x, y):
+    x = x.dropna()
+    y = y.dropna()
+
+    if len(x) < 2 or len(y) < 2:
+        return np.nan
+
+    # 두 집단 값이 완전히 동일하면 에러 발생 가능
+    try:
+        stat, p = mannwhitneyu(x, y, alternative="two-sided")
+        return p
+    except ValueError:
+        return np.nan
+
+
 def cohens_d(x, y):
     x = x.dropna()
     y = y.dropna()
@@ -59,51 +87,63 @@ def cohens_d(x, y):
     return (x.mean() - y.mean()) / pooled_std
 
 # ---------------------------
-# 4. Cohen's d 계산
+# 4. 통계 지 계산
 # ---------------------------
 results = []
 
-for (d1, tag1), (d2, tag2) in combinations(groups.keys(), 2):
+ng_df = df2[df2["TAG"] == "NG"]
+unique_dates = ng_df["date"].unique()
 
-    # 같은 날짜 내 OK vs NG 비교만 하고 싶으면 ↓
-    if d1 != d2:
+for target_date in unique_dates:
+
+    g1 = ng_df[ng_df["date"] == target_date]
+    g2 = ng_df[ng_df["date"] != target_date]
+
+    # 비교 불가 케이스 제거
+    if len(g1) < 2 or len(g2) < 2:
         continue
-
-    # OK vs NG만 비교 (같은 TAG끼리는 제외)
-    if tag1 == tag2:
-        continue
-
-    g1, g2 = groups[(d1, tag1)], groups[(d2, tag2)]
 
     for col in check_cols:
-        d = cohens_d(g1[col], g2[col])
+        cd = cohens_d(g1[col], g2[col])
+        t_p = t_test(g1[col], g2[col])
+        w_p = wilcoxon_rank_sum(g1[col], g2[col])
 
-        if pd.notna(d):
+        if any(pd.notna(v) for v in [cd, t_p, w_p]):
             results.append({
-                "date": d1,
-                "tag_1": tag1,
-                "tag_2": tag2,
+                "target_date": target_date,
                 "column": col,
-                "cohens_d": d
+                "cohens_d": cd,
+                "t_pvalue": t_p,
+                "wilcoxon_pvalue": w_p,
+                "compare": "NG_target_vs_NG_others"
             })
 
-cohen_df = pd.DataFrame(results)
+stat_df = pd.DataFrame(results)
 
 # ---------------------------
-# 5. |Cohen's d| > 0.05 추출
+# 5. 필터링 및 결과 해석
 # ---------------------------
-threshold = 0.05
 
-small_effect_df = cohen_df[
-    cohen_df["cohens_d"].abs() > threshold
+summary_df = (
+    stat_df
+    .assign(
+        cohens_d_sig = lambda x: x["cohens_d"].abs() > 0.8,
+        ttest_sig    = lambda x: x["t_pvalue"] < 0.05,
+        wilcox_sig   = lambda x: x["wilcoxon_pvalue"] < 0.05,
+    )
+    .groupby(["target_date", "column"])
+    .agg(
+        cohens_d_mean=("cohens_d", "mean"),
+        cohens_d_max =("cohens_d", lambda x: x.abs().max()),
+        cohens_d_sig =("cohens_d_sig", "any"),
+        ttest_sig    =("ttest_sig", "any"),
+        wilcox_sig   =("wilcox_sig", "any"),
+        n_compare    =("column", "size"),
+    )
+    .reset_index()
+)
+
+final_flagged = summary_df[
+    summary_df["cohens_d_sig"] &
+    (summary_df["ttest_sig"] | summary_df["wilcox_sig"])
 ].reset_index(drop=True)
-
-
-# ---------------------------
-# 6. 결과 확인
-# ---------------------------
-print("=== date 내 OK vs NG |Cohen's d| > 0.05 ===")
-print(small_effect_df["column"].value_counts())
-
-
-# %%
