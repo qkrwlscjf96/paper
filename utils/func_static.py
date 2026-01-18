@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from scipy.stats import ttest_ind, mannwhitneyu
 
-def static_1(df :pd.DataFrame,check_cols: list) -> pd.DataFrame:
+def static_1(ng_df :pd.DataFrame,check_cols: list) -> pd.DataFrame:
     """용해탱크 데이터에 대한 통계적 이상치 탐지 함수"""
         
     # ---------------------------
@@ -54,18 +54,17 @@ def static_1(df :pd.DataFrame,check_cols: list) -> pd.DataFrame:
         return (x.mean() - y.mean()) / pooled_std
 
     # ---------------------------
-    # 통계 지 계산
+    # 통계치 계산
     # ---------------------------
     results = []
     
-    #TODO: NG가 많이 없는 것은 OK끼리도 비교 추가?
-    ng_df = df[df["TAG"] == "NG"]
-    unique_dates = ng_df["date"].unique()
+    #TODO: NG가 많이 없는 것은 OK끼리도 비교 추가? (현재는 NG끼리만 비교)
+    unique_dates = ng_df["DATE"].unique()
 
     for target_date in unique_dates:
 
-        g1 = ng_df[ng_df["date"] == target_date]
-        g2 = ng_df[ng_df["date"] != target_date]
+        g1 = ng_df[ng_df["DATE"] == target_date]
+        g2 = ng_df[ng_df["DATE"] != target_date]
 
         # 비교 불가 케이스 제거
         if len(g1) < 2 or len(g2) < 2:
@@ -117,3 +116,37 @@ def static_1(df :pd.DataFrame,check_cols: list) -> pd.DataFrame:
     ].reset_index(drop=True)
     
     return final_flagged
+
+def static_2(ng_df :pd.DataFrame,check_cols: list,df) -> pd.DataFrame:
+    """용해탱크 데이터에 대한 통계적 이상치 탐지 함수2"""
+    
+    iqr_bounds = {}
+    
+    #TODO: NG가 많이 없으면 전체 데이터로 IQR 산출 (혀재는 NG 데이터로만 IQR 산출)
+    for col in check_cols:
+        q1 = ng_df[col].quantile(0.25)
+        q3 = ng_df[col].quantile(0.75)
+        iqr = q3 - q1
+
+        lower = q1 - 1.5 * iqr
+        upper = q3 + 1.5 * iqr
+
+        iqr_bounds[col] = {
+            "q1": q1,
+            "q3": q3,
+            "iqr": iqr,
+            "lower": lower,
+            "upper": upper
+        }
+
+    outlier_mask = pd.DataFrame(False, index=df.index, columns=check_cols)
+
+    for col in check_cols:
+        lower = iqr_bounds[col]["lower"]
+        upper = iqr_bounds[col]["upper"]
+
+        outlier_mask[col] = (df[col] < lower) | (df[col] > upper)
+
+    outlier_rows = df[outlier_mask.any(axis=1)]
+    
+    return outlier_rows
