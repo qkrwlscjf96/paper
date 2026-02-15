@@ -1,0 +1,52 @@
+
+#%%
+import pandas as pd
+from pathlib import Path
+import numpy as np
+from utils.func_static import *
+from utils.func_eda import *
+from utils.func_feat_imp import *
+
+#base_path = Path(__file__).parent
+base_path = Path("/Users/danielpark/Documents/서강대/pgm/논문/src").parent
+data_path = base_path / 'data'
+
+#xlsx_files = list(data_path.glob('*.xlsx'))
+csv_files = list(data_path.glob('*.csv'))
+
+# 기본꼴 : 날짜 DATE / 검사 TAG / 측정값 칼럼들
+
+#용접기
+#df1 = pd.read_excel(xlsx_files[0], sheet_name='Raw')
+
+#용해탱크
+df = pd.read_csv(csv_files[0])
+target_col = "TAG"
+
+df["DATE"] = pd.to_datetime(df["STD_DT"]).dt.date
+df = df.drop(columns=["STD_DT"])
+df = df[["DATE", "MELT_TEMP", "MOTORSPEED", "MELT_WEIGHT", target_col]].dropna()
+df[target_col] = df[target_col].apply(lambda x: 1 if x == "NG" else 0)
+
+ng_df = df[df[target_col] == 1]
+check_cols = df.columns.difference(["DATE", target_col])
+
+
+#%%
+# Feature Importance
+
+feature_importance_result = xgboost_feature_importance(df, target_col, model_type="class")
+
+#%%
+# Statistical Analysis
+
+static_1_result = date_group_test(ng_df,check_cols)
+static_2_result = outlier_remover(ng_df,check_cols,df)
+static_3_result = date_trend(ng_df,check_cols)
+
+# %%
+# EDA
+plot_boxplots_by_date(df, check_cols)
+
+
+# %%
