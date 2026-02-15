@@ -109,10 +109,11 @@ def date_group_test(ng_df :pd.DataFrame,check_cols: list) -> pd.DataFrame:
     
     return final_flagged
 
-def outlier_remover(ng_df :pd.DataFrame,check_cols: list,df) -> pd.DataFrame:
+def outlier_remover(df :pd.DataFrame, target_col : str, check_cols: list) -> pd.DataFrame:
     """IQR 기반 이상치 탐지 함수"""
     
     iqr_bounds = {}
+    ng_df =  df[df[target_col] == 1].reset_index(drop=True)  # NG 데이터만 추출
     
     # IQR 계산 및 이상치 경계 설정
     #TODO: NG가 많이 없으면 전체 데이터로 IQR 산출 (혀재는 NG 데이터로만 IQR 산출)
@@ -193,3 +194,59 @@ def date_trend(df: pd.DataFrame, check_cols: list) -> dict:
 
 
     return result
+
+def corr_with_defect(df: pd.DataFrame, target_col: str, check_cols: list) -> pd.DataFrame:
+    """
+    각 변수(col)와 target_col 간 피어슨/스피어만 상관계수 계산
+    DATE 컬럼은 datetime → int64 timestamp로 변환 후 상관계수 계산
+    """
+
+    date_col = "DATE"
+    top_n = 10
+    
+    df[date_col] = pd.to_datetime(df[date_col])
+
+    results = []
+
+    # 날짜별 상관계수 계산
+    for date, subdf in df.groupby(date_col):
+
+        for col in check_cols:
+
+            # 수치형만 처리
+            if not np.issubdtype(subdf[col].dtype, np.number):
+                continue
+
+            # 데이터 부족 시 상관계수 불가
+            valid = subdf[[col, target_col]].dropna()
+            
+            # 데이터 부족 or 값이 constant한 경우 → corr 계산 불가
+            if len(valid) < 2 or valid[col].nunique() < 2 or valid[target_col].nunique() < 2:
+                pearson_corr = np.nan
+                spearman_corr = np.nan
+            else:
+                pearson_corr = valid[col].corr(valid[target_col], method="pearson")
+                spearman_corr = valid[col].corr(valid[target_col], method="spearman")
+
+
+            results.append({
+                "date" : date,
+                "column": col,
+                "pearson": pearson_corr,
+                "spearman": spearman_corr
+            })
+
+    # DataFrame 변환
+    corr_df = pd.DataFrame(results)
+
+    # 변수별 평균 상관계수 계산
+    corr_df = corr_df.groupby(["date","column"]).agg({
+        "pearson": "mean",
+        "spearman": "mean"
+    }).reset_index()
+
+    # 절댓값 기준 상위 n개 변수 선택
+    corr_df["abs_mean_corr"] = corr_df["pearson"].abs()  # 기준: Pearson
+    corr_df = corr_df.sort_values("abs_mean_corr", ascending=False).head(top_n).reset_index(drop=True)
+
+    return corr_df

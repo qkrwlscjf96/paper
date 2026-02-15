@@ -2,7 +2,8 @@ import xgboost as xgb
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
-def xgboost_feature_importance(df, target_col, model_type):
+def xgboost_feature_importance(df: pd.DataFrame, target_col : list, model_type: str) -> pd.DataFrame:
+    """XGBoost를 활용한 Feature Importance 분석 함수"""
     
     df = df.drop("DATE", axis=1)  # 날짜 컬럼 제거
     

@@ -41,8 +41,9 @@ feature_importance_result = xgboost_feature_importance(df, target_col, model_typ
 # Statistical Analysis
 
 static_1_result = date_group_test(ng_df,check_cols)
-static_2_result = outlier_remover(ng_df,check_cols,df)
-static_3_result = date_trend(ng_df,check_cols)
+static_2_result = outlier_remover(df,target_col,check_cols)
+static_3_result = date_trend(df,check_cols)
+static_4_result = corr_with_defect(df, target_col, check_cols)
 
 # %%
 # EDA
