@@ -33,7 +33,7 @@ def xgboost_feature_importance(df: pd.DataFrame, target_col : list, model_type: 
 
     importance = model.get_booster().get_score(importance_type="gain")
     importance_df = pd.DataFrame(
-        importance.items(), columns=["feature", "importance"]
+        importance.items(), columns=["FEATURE", "importance"]
     ).sort_values("importance", ascending=False)
 
     return importance_df

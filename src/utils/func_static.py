@@ -107,6 +107,10 @@ def date_group_test(ng_df :pd.DataFrame,check_cols: list) -> pd.DataFrame:
         (summary_df["ttest_sig"] | summary_df["wilcox_sig"])
     ].reset_index(drop=True)
     
+    #RESULT 해석을 위해 컬럼명 변경
+    final_flagged = final_flagged.rename(columns={"target_date": "DATE"})
+    final_flagged = final_flagged.rename(columns={"column": "FEATURE"})
+    
     return final_flagged
 
 def outlier_remover(df :pd.DataFrame, target_col : str, check_cols: list) -> pd.DataFrame:
@@ -157,7 +161,7 @@ def date_trend(df: pd.DataFrame, check_cols: list) -> dict:
     # 이탈 강도 기준 (%)
     min_deviation = -2  # -2% 이하일 때만 유효
 
-    result = {}
+    result_list = []
 
     for value_col in check_cols:
 
@@ -188,11 +192,16 @@ def date_trend(df: pd.DataFrame, check_cols: list) -> dict:
             (daily_df["deviation_pct"] <= min_deviation) &
             (daily_df["ma_short"].notna()) &
             (daily_df["ma_long"].notna())
-        ]
+        ].copy() 
         
-        result[value_col] = filtered.reset_index(drop=True)
-
-
+        filtered["FEATURE"] = value_col  # 어떤 변수인지 표시
+        result_list.append(filtered.reset_index(drop=True))
+        
+    result = pd.concat(result_list, ignore_index=True)
+    
+    cols = ["DATE", "FEATURE"] + [col for col in result.columns if col not in ["DATE", "FEATURE"]]
+    result = result[cols]
+        
     return result
 
 def corr_with_defect(df: pd.DataFrame, target_col: str, check_cols: list) -> pd.DataFrame:
@@ -204,7 +213,7 @@ def corr_with_defect(df: pd.DataFrame, target_col: str, check_cols: list) -> pd.
     date_col = "DATE"
     top_n = 10
     
-    df[date_col] = pd.to_datetime(df[date_col])
+    # df[date_col] = pd.to_datetime(df[date_col])
 
     results = []
 
@@ -230,8 +239,8 @@ def corr_with_defect(df: pd.DataFrame, target_col: str, check_cols: list) -> pd.
 
 
             results.append({
-                "date" : date,
-                "column": col,
+                "DATE" : date,
+                "FEATURE": col,
                 "pearson": pearson_corr,
                 "spearman": spearman_corr
             })
@@ -240,7 +249,7 @@ def corr_with_defect(df: pd.DataFrame, target_col: str, check_cols: list) -> pd.
     corr_df = pd.DataFrame(results)
 
     # 변수별 평균 상관계수 계산
-    corr_df = corr_df.groupby(["date","column"]).agg({
+    corr_df = corr_df.groupby(["DATE","FEATURE"]).agg({
         "pearson": "mean",
         "spearman": "mean"
     }).reset_index()

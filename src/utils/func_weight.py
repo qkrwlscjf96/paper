@@ -1,0 +1,76 @@
+import pandas as pd
+
+def get_weighted_df(df, check_cols, static_1_result, static_2_result, static_3_result, static_4_result,feature_importance_result):
+    """가중치 적용된 DataFrame 생성 함수"""
+    
+    # 가중치 (통계 분석 기반)
+    weight_base_df = df.copy()
+
+    ## index별 가중치
+    static_2_result["flag_static2"] = 1
+
+    merge_cols = static_2_result.columns.tolist().remove("flag_static2")
+
+    weight_base_df = weight_base_df.merge(
+        static_2_result,
+        on=merge_cols,
+        how="left"
+    )
+
+    weight_base_df.loc[weight_base_df["flag_static2"] == 1, check_cols] *= 2
+    weight_base_df = weight_base_df.drop(columns=["flag_static2"])
+
+    ## 날짜별 가중치
+    weight_base_df["INDEX"] = weight_base_df.index
+    temp_weight_df = weight_base_df.melt(id_vars=["INDEX", "DATE"], var_name="FEATURE", value_name="VALUE")
+
+    static_list = [
+        ("flag_static1", static_1_result),
+        ("flag_static3", static_3_result),
+        ("flag_static4", static_4_result),
+    ]
+
+    for flag_name, static_df in static_list:
+        temp_weight_df = temp_weight_df.merge(
+            static_df[["DATE", "FEATURE"]].assign(**{flag_name: 1}),
+            on=["DATE", "FEATURE"],
+            how="left"
+        )
+
+    flag_cols = [name for name, _ in static_list]
+
+    multiplier = (
+        temp_weight_df[flag_cols]
+        .fillna(0)
+        .replace({0: 1, 1: 2})
+        .prod(axis=1)
+    )
+
+    temp_weight_df["VALUE"] *= multiplier
+
+    weight_df = (
+        temp_weight_df[["INDEX", "DATE", "FEATURE", "VALUE"]]
+        .pivot(index=["INDEX", "DATE"], columns="FEATURE", values="VALUE")
+        .reset_index()
+    )
+
+    weight_df = weight_df.drop(columns=["INDEX"])
+    
+    # 가중치 (Feature Importance 기반)
+    feature_importance_result["WEIGHT"] = 1 + (feature_importance_result["importance"] / feature_importance_result["importance"].sum())
+
+    weight_map = dict(
+        zip(
+            feature_importance_result["FEATURE"],
+            feature_importance_result["WEIGHT"]
+        )
+    )
+
+    common_cols = df.columns.intersection(weight_map.keys())
+
+    weight_df[common_cols] = (
+        weight_df[common_cols]
+        .mul(pd.Series(weight_map), axis=1)
+    )
+    
+    return weight_df
