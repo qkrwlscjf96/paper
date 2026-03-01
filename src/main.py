@@ -14,7 +14,7 @@ data_path = base_path / 'data'
 #xlsx_files = list(data_path.glob('*.xlsx'))
 csv_files = list(data_path.glob('*.csv'))
 
-# 기본꼴 : 날짜 DATE / 검사 TAG / 측정값 칼럼들
+#TODO 기본꼴 : 날짜 DATE / 검사 TAG / 측정값 칼럼들
 
 #용접기
 #df1 = pd.read_excel(xlsx_files[0], sheet_name='Raw')
