@@ -9,11 +9,9 @@ def get_weighted_df(df, check_cols, static_1_result, static_2_result, static_3_r
     ## index별 가중치
     static_2_result["flag_static2"] = 1
 
-    merge_cols = static_2_result.columns.tolist().remove("flag_static2")
-
     weight_base_df = weight_base_df.merge(
         static_2_result,
-        on=merge_cols,
+        on=weight_base_df.columns.tolist(),
         how="left"
     )
 
@@ -73,4 +71,5 @@ def get_weighted_df(df, check_cols, static_1_result, static_2_result, static_3_r
         .mul(pd.Series(weight_map), axis=1)
     )
     
+    print("가중치 적용된 df 생성 완료")
     return weight_df

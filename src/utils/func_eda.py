@@ -20,10 +20,15 @@ def plot_boxplots_by_date(df:pd.DataFrame, check_cols:list)->None:
         plt.xlabel("Date")
         plt.ylabel(col)
 
-        # x축 90도 회전
-        plt.xticks(rotation=90)
+        # x축 일부만 표시 (예: 10개만)
+        ax = plt.gca()
+        ticks = ax.get_xticks()
+        
+        n = 10  # 보여줄 개수
+        step = max(1, len(ticks) // n)
+        ax.set_xticks(ticks[::step])
 
-        # legend 오른쪽 위 고정
+        plt.xticks(rotation=90)
         plt.legend(title="TAG", loc="upper right")
 
         plt.tight_layout()

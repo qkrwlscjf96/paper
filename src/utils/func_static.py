@@ -111,6 +111,7 @@ def date_group_test(ng_df :pd.DataFrame,check_cols: list) -> pd.DataFrame:
     final_flagged = final_flagged.rename(columns={"target_date": "DATE"})
     final_flagged = final_flagged.rename(columns={"column": "FEATURE"})
     
+    print(f"날짜별 집단차이 통계적 검정 결과: 총 {len(final_flagged)}개 날짜-변수 조합에서 유의미한 차이 감지")
     return final_flagged
 
 def outlier_remover(df :pd.DataFrame, target_col : str, check_cols: list) -> pd.DataFrame:
@@ -120,7 +121,7 @@ def outlier_remover(df :pd.DataFrame, target_col : str, check_cols: list) -> pd.
     ng_df =  df[df[target_col] == 1].reset_index(drop=True)  # NG 데이터만 추출
     
     # IQR 계산 및 이상치 경계 설정
-    #TODO: NG가 많이 없으면 전체 데이터로 IQR 산출 (혀재는 NG 데이터로만 IQR 산출)
+    #TODO: NG가 많이 없으면 전체 데이터로 IQR 산출 (현재는 NG 데이터로만 IQR 산출)
     for col in check_cols:
         q1 = ng_df[col].quantile(0.25)
         q3 = ng_df[col].quantile(0.75)
@@ -146,7 +147,9 @@ def outlier_remover(df :pd.DataFrame, target_col : str, check_cols: list) -> pd.
 
         outlier_mask[col] = (df[col] < lower) | (df[col] > upper)
 
-    outlier_rows = df[outlier_mask.any(axis=1)].reset_index(drop=True)
+    outlier_rows = df[outlier_mask.any(axis=1)]
+    outlier_rows = outlier_rows.drop_duplicates().reset_index(drop=True)
+    print(f"IQR 기반 이상치 탐지 결과: 총 {len(outlier_rows)}개 행이 이상치로 감지")
     
     return outlier_rows
 
@@ -201,7 +204,8 @@ def date_trend(df: pd.DataFrame, check_cols: list) -> dict:
     
     cols = ["DATE", "FEATURE"] + [col for col in result.columns if col not in ["DATE", "FEATURE"]]
     result = result[cols]
-        
+    
+    print(f"날짜별 트렌드 분석 결과: 총 {len(result)}개 날짜에서 이상 트렌드 감지")
     return result
 
 def corr_with_defect(df: pd.DataFrame, target_col: str, check_cols: list) -> pd.DataFrame:
@@ -258,4 +262,5 @@ def corr_with_defect(df: pd.DataFrame, target_col: str, check_cols: list) -> pd.
     corr_df["abs_mean_corr"] = corr_df["pearson"].abs()  # 기준: Pearson
     corr_df = corr_df.sort_values("abs_mean_corr", ascending=False).head(top_n).reset_index(drop=True)
 
+    print(f"상관계수 분석 결과: 총 {len(corr_df)}개 변수에서 상관계수 계산 완료 (상위 {top_n}개 변수 선택)")
     return corr_df
