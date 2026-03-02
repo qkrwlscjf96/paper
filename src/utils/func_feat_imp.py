@@ -35,7 +35,6 @@ def xgboost_feature_importance(df: pd.DataFrame, target_col : list, model_type: 
     importance_df = pd.DataFrame(
         importance.items(), columns=["FEATURE", "importance"]
     ).sort_values("importance", ascending=False)
-
     print("Feature Importance 분석 결과:")
     print(importance_df)
     return importance_df

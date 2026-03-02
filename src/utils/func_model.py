@@ -8,7 +8,7 @@ from sklearn.metrics import accuracy_score, classification_report, confusion_mat
 def model_training(df, check_cols, target_col):
     # Feature / Target 분리
     X = df[check_cols]
-    y = df[target_col]
+    y = df[target_col[0]]
 
     # train/test 분리 (시계열이면 shuffle=False)
     X_train, X_test, y_train, y_test = train_test_split(
