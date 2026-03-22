@@ -1,0 +1,11 @@
+.git
+.gitignore
+.DS_Store
+.vscode
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+src/__pycache__
+src/utils/__pycache__
+temp_code

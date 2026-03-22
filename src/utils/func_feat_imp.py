@@ -19,14 +19,16 @@ def xgboost_feature_importance(df: pd.DataFrame, target_col : list, model_type: 
             n_estimators=300,
             learning_rate=0.05,
             max_depth=5,
-            random_state=42
+            random_state=42,
+            n_jobs=1
         )
     else:
         model = xgb.XGBClassifier(
             n_estimators=300,
             learning_rate=0.05,
             max_depth=5,
-            random_state=42
+            random_state=42,
+            n_jobs=1
         )
 
     model.fit(X_train, y_train)
