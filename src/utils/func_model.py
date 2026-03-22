@@ -1,9 +1,12 @@
 # 모델 학습
 
+import json
+
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.neural_network import MLPClassifier
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+
 
 def model_training(df, check_cols, target_col):
     # Feature / Target 분리
@@ -36,7 +39,19 @@ def model_training(df, check_cols, target_col):
     y_pred = model.predict(X_test)
 
     # 평가
-    print("Accuracy:", accuracy_score(y_test, y_pred))
-    print(confusion_matrix(y_test, y_pred))
-    print(classification_report(y_test, y_pred))
+    accuracy = accuracy_score(y_test, y_pred)
+    confusion = confusion_matrix(y_test, y_pred)
+    report_dict = classification_report(y_test, y_pred, output_dict=True)
+    report_text = classification_report(y_test, y_pred)
 
+    print("Accuracy:", accuracy)
+    print(confusion)
+    print(report_text)
+
+    return {
+        "accuracy": float(accuracy),
+        "confusion_matrix": confusion.tolist(),
+        "classification_report": report_dict,
+        "classification_report_text": report_text,
+        "model_params": json.loads(json.dumps(model.get_params(), default=str)),
+    }

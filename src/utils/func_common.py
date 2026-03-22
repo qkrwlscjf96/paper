@@ -17,14 +17,14 @@ class FileReader(ABC):
 # CSV 전용 클래스
 class CSVReader(FileReader):
     def read(self) -> pd.DataFrame:
-        print("Reading CSV file 완료")
+        print(f"Reading CSV file: {self.filepath}")
         return pd.read_csv(self.filepath).reset_index(drop=True)
 
 
 # Excel 전용 클래스
 class ExcelReader(FileReader):
     def read(self) -> pd.DataFrame:
-        print("Reading Excel file 완료")
+        print(f"Reading Excel file: {self.filepath}")
         return pd.read_excel(self.filepath).reset_index(drop=True)
 
 

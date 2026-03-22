@@ -1,6 +1,6 @@
 import pandas as pd
 
-def get_weighted_df(df, check_cols, static_1_result, static_2_result, static_3_result, static_4_result,feature_importance_result):
+def get_weighted_df(df, check_cols, index_mul, date_mul, static_1_result, static_2_result, static_3_result, static_4_result,feature_importance_result):
     """가중치 적용된 DataFrame 생성 함수"""
     
     # 가중치 (통계 분석 기반)
@@ -15,7 +15,7 @@ def get_weighted_df(df, check_cols, static_1_result, static_2_result, static_3_r
         how="left"
     )
 
-    weight_base_df.loc[weight_base_df["flag_static2"] == 1, check_cols] *= 2
+    weight_base_df.loc[weight_base_df["flag_static2"] == 1, check_cols] *= index_mul
     weight_base_df = weight_base_df.drop(columns=["flag_static2"])
 
     ## 날짜별 가중치
@@ -40,7 +40,7 @@ def get_weighted_df(df, check_cols, static_1_result, static_2_result, static_3_r
     multiplier = (
         temp_weight_df[flag_cols]
         .fillna(0)
-        .replace({0: 1, 1: 2})
+        .replace({0: 1, 1: date_mul})
         .prod(axis=1)
     )
 

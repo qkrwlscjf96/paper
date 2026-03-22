@@ -1,3 +1,5 @@
 /temp_code
 __pycache__/
 *.pyc
+/mlruns
+/mlflow_data
