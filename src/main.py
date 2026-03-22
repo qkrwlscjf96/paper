@@ -12,13 +12,7 @@ if ROOT not in sys.path:
 from pathlib import Path
 import pandas as pd
 import numpy as np
-from utils.func_common import *
-from utils.func_static import *
-from utils.func_eda import *
-from utils.func_feat_imp import *
-from utils.func_weight import *
-from utils.func_model import *
-
+from .utils import *
 
 base_path = Path(__file__).parent.parent
 data_path = base_path / 'data'
