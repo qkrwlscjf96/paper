@@ -1,4 +1,6 @@
+.vscode
 /temp_code
+/result
 __pycache__/
 *.pyc
 /mlruns

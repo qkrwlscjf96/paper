@@ -11,36 +11,36 @@ from .func_model import model_training
 
 
 def get_mlflow_config(base_path: Path) -> dict:
-    tracking_dir = Path(os.getenv("MLFLOW_TRACKING_DIR", str(base_path / "mlflow_data"))).expanduser()
-    artifact_dir = Path(os.getenv("MLFLOW_ARTIFACT_DIR", str(tracking_dir / "artifacts"))).expanduser()
+    TRACKING_DIR = Path(os.getenv("MLFLOW_TRACKING_DIR", str(base_path / "mlflow_data"))).expanduser()
+    ARTIFACT_DIR = Path(os.getenv("MLFLOW_ARTIFACT_DIR", str(TRACKING_DIR / "artifacts"))).expanduser()
 
-    default_tracking_uri = f"sqlite:///{(tracking_dir / 'mlflow.db').resolve().as_posix()}"
-    tracking_uri = os.getenv("MLFLOW_TRACKING_URI", default_tracking_uri)
-    artifact_uri = os.getenv("MLFLOW_ARTIFACT_ROOT", artifact_dir.resolve().as_uri())
+    DEFAULT_TRACKING_URI = f"sqlite:///{(TRACKING_DIR / 'mlflow.db').resolve().as_posix()}"
+    TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", DEFAULT_TRACKING_URI)
+    ARTIFACT_URI = os.getenv("MLFLOW_ARTIFACT_ROOT", ARTIFACT_DIR.resolve().as_uri())
 
     return {
-        "tracking_dir": tracking_dir,
-        "artifact_dir": artifact_dir,
-        "tracking_uri": tracking_uri,
-        "artifact_uri": artifact_uri,
+        "tracking_dir": TRACKING_DIR,
+        "artifact_dir": ARTIFACT_DIR,
+        "tracking_uri": TRACKING_URI,
+        "artifact_uri": ARTIFACT_URI,
     }
 
 
 def configure_mlflow(base_path: Path, experiment_name: str) -> dict:
     config = get_mlflow_config(base_path)
-    tracking_dir = config["tracking_dir"]
-    artifact_dir = config["artifact_dir"]
-    tracking_uri = config["tracking_uri"]
-    artifact_uri = config["artifact_uri"]
+    TRACKING_DIR = config["tracking_dir"]
+    ARTIFACT_DIR = config["artifact_dir"]
+    TRACKING_URI = config["tracking_uri"]
+    ARTIFACT_URI = config["artifact_uri"]
 
-    tracking_dir.mkdir(parents=True, exist_ok=True)
-    artifact_dir.mkdir(parents=True, exist_ok=True)
+    TRACKING_DIR.mkdir(parents=True, exist_ok=True)
+    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
 
-    mlflow.set_tracking_uri(tracking_uri)
-    client = MlflowClient(tracking_uri=tracking_uri)
+    mlflow.set_tracking_uri(TRACKING_URI)
+    client = MlflowClient(tracking_uri=TRACKING_URI)
 
     if client.get_experiment_by_name(experiment_name) is None:
-        client.create_experiment(experiment_name, artifact_location=artifact_uri)
+        client.create_experiment(experiment_name, artifact_location=ARTIFACT_URI)
 
     mlflow.set_experiment(experiment_name)
     return config
@@ -92,10 +92,14 @@ def run_and_log_model(
 
         metrics = model_training(df_to_train, check_cols, target_col)
         mlflow.log_metric("accuracy", metrics["accuracy"])
+        mlflow.log_metric("validation_accuracy", metrics["validation_accuracy"])
+        mlflow.log_metric("cv_accuracy_mean", metrics["cv_accuracy_mean"])
+        mlflow.log_metric("cv_accuracy_std", metrics["cv_accuracy_std"])
         log_dict_artifact(
             {
                 "confusion_matrix": metrics["confusion_matrix"],
                 "classification_report": metrics["classification_report"],
+                "cv_fold_accuracies": metrics["cv_fold_accuracies"],
                 "model_params": metrics["model_params"],
             },
             artifact_path="metrics",

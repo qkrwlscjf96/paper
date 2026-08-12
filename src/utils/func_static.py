@@ -114,11 +114,23 @@ def date_group_test(ng_df :pd.DataFrame,check_cols: list) -> pd.DataFrame:
     print(f"날짜별 집단차이 통계적 검정 결과: 총 {len(final_flagged)}개 날짜-변수 조합에서 유의미한 차이 감지")
     return final_flagged
 
-def outlier_remover(df :pd.DataFrame, target_col : str, check_cols: list) -> pd.DataFrame:
-    """IQR 기반 이상치 탐지 함수"""
+def outlier_remover(
+    full_df: pd.DataFrame,
+    target_col: str,
+    check_cols: list,
+    directional_corr_threshold: float = 0.0,
+) -> pd.DataFrame:
+    """IQR 기반 이상치 탐지 함수
+    
+    변수와 불량(target) 간 방향성을 확인하여
+    - |corr|가 threshold 이상으로 강하면
+      - 망대(불량과 반비례, 음의 상관): lower만 이상치로 판단
+      - 망소(불량과 비례, 양의 상관): upper만 이상치로 판단
+    - |corr|가 threshold 미만이면 기존처럼 양측 이상치로 판단
+    """
     
     iqr_bounds = {}
-    ng_df =  df[df[target_col] == 1].reset_index(drop=True)  # NG 데이터만 추출
+    ng_df = full_df[full_df[target_col] == 1].reset_index(drop=True)  # NG 데이터만 추출
     
     # IQR 계산 및 이상치 경계 설정
     #TODO: NG가 많이 없으면 전체 데이터로 IQR 산출 (현재는 NG 데이터로만 IQR 산출)
@@ -139,128 +151,124 @@ def outlier_remover(df :pd.DataFrame, target_col : str, check_cols: list) -> pd.
         }
 
     # 이상치 여부 판단
-    outlier_mask = pd.DataFrame(False, index=df.index, columns=check_cols)
+    outlier_mask = pd.DataFrame(False, index=full_df.index, columns=check_cols)
 
     for col in check_cols:
         lower = iqr_bounds[col]["lower"]
         upper = iqr_bounds[col]["upper"]
+        valid = full_df[[col, target_col]].dropna()
+        corr = np.nan
 
-        outlier_mask[col] = (df[col] < lower) | (df[col] > upper)
+        if len(valid) >= 2 and valid[col].nunique() >= 2 and valid[target_col].nunique() >= 2:
+            corr = valid[col].corr(valid[target_col], method="pearson")
 
-    outlier_rows = df[outlier_mask.any(axis=1)]
+        if pd.isna(corr) or abs(corr) < directional_corr_threshold:
+            outlier_mask[col] = (full_df[col] < lower) | (full_df[col] > upper)
+        elif corr < 0:
+            # 망대: 값이 작을수록 불량 가능성이 높으므로 lower만 확인
+            outlier_mask[col] = full_df[col] < lower
+        else:
+            # 망소: 값이 클수록 불량 가능성이 높으므로 upper만 확인
+            outlier_mask[col] = full_df[col] > upper
+
+    outlier_rows = full_df[outlier_mask.any(axis=1)]
     outlier_rows = outlier_rows.drop_duplicates().reset_index(drop=True)
-    print(f"IQR 기반 이상치 탐지 결과: 총 {len(outlier_rows)}개 행이 이상치로 감지")
+    print(
+        "IQR 기반 이상치 탐지 결과: "
+        f"corr_threshold={directional_corr_threshold}, "
+        f"총 {len(outlier_rows)}개 행이 이상치로 감지"
+    )
     
     return outlier_rows
 
 
-def date_trend(df: pd.DataFrame, check_cols: list) -> dict:
-    """날짜별 트렌드 분석 함수"""
+def date_trend(
+    full_df: pd.DataFrame,
+    check_cols: list,
+    target_col: str,
+    min_deviation: float = -2,
+    window_short: int = 3,
+    window_long: int = 7,
+) -> dict:
+    """날짜별 트렌드 분석 함수
+
+    변수별 평균 트렌드 이상감지와 불량률 트렌드 이상감지를 함께 수행하고,
+    두 이상이 같은 날짜에 동시에 발생한 경우만 반환한다.
+    """
     
     date_col = "DATE"
-    window_short = 3
-    window_long = 7
-    
-    # 이탈 강도 기준 (%)
-    min_deviation = -2  # -2% 이하일 때만 유효
+    def build_trend_flags(daily_df: pd.DataFrame, value_name: str) -> pd.DataFrame:
+        daily_df = daily_df.sort_values(date_col).copy()
 
-    result_list = []
+        daily_df["ma_short"] = daily_df[value_name].rolling(window_short).mean()
+        daily_df["ma_long"] = daily_df[value_name].rolling(window_long).mean()
 
-    for value_col in check_cols:
-
-        # 날짜별 평균 생성
-        daily_df = (
-            df.groupby(date_col)[value_col]
-            .mean()
-            .reset_index(name="daily_mean")
-        )
-
-        daily_df = daily_df.sort_values(date_col)
-
-        daily_df["ma_short"] = daily_df["daily_mean"].rolling(window_short).mean()
-        daily_df["ma_long"] = daily_df["daily_mean"].rolling(window_long).mean()
-
-        daily_df["break_ma_short"] = daily_df["daily_mean"] < daily_df["ma_short"]
-        daily_df["break_ma_long"] = daily_df["daily_mean"] < daily_df["ma_long"]
-
-        # 이탈 강도 계산
+        daily_df["break_ma_short"] = daily_df[value_name] < daily_df["ma_short"]
+        daily_df["break_ma_long"] = daily_df[value_name] < daily_df["ma_long"]
         daily_df["deviation_pct"] = (
-            (daily_df["daily_mean"] - daily_df["ma_long"]) / daily_df["ma_long"] * 100
+            (daily_df[value_name] - daily_df["ma_long"]) / daily_df["ma_long"] * 100
         )
 
-        # short & long 동시 이탈 + 강도 필터
-        filtered = daily_df[
+        return daily_df[
             (daily_df["break_ma_short"]) &
             (daily_df["break_ma_long"]) &
             (daily_df["deviation_pct"] <= min_deviation) &
             (daily_df["ma_short"].notna()) &
             (daily_df["ma_long"].notna())
-        ].copy() 
+        ].copy()
+
+    defect_daily_df = (
+        full_df.groupby(date_col)[target_col]
+        .mean()
+        .reset_index(name="defect_rate")
+    )
+    defect_filtered = build_trend_flags(defect_daily_df, "defect_rate")
+    defect_filtered = defect_filtered.rename(
+        columns={
+            "ma_short": "defect_ma_short",
+            "ma_long": "defect_ma_long",
+            "break_ma_short": "defect_break_ma_short",
+            "break_ma_long": "defect_break_ma_long",
+            "deviation_pct": "defect_deviation_pct",
+        }
+    )
+    defect_filtered = defect_filtered[
+        [
+            "DATE",
+            "defect_rate",
+            "defect_ma_short",
+            "defect_ma_long",
+            "defect_break_ma_short",
+            "defect_break_ma_long",
+            "defect_deviation_pct",
+        ]
+    ]
+
+    result_list = []
+
+    for value_col in check_cols:
+        daily_df = (
+            full_df.groupby(date_col)[value_col]
+            .mean()
+            .reset_index(name="daily_mean")
+        )
+        filtered = build_trend_flags(daily_df, "daily_mean")
+        filtered = filtered.merge(defect_filtered, on="DATE", how="inner")
         
         filtered["FEATURE"] = value_col  # 어떤 변수인지 표시
         result_list.append(filtered.reset_index(drop=True))
-        
-    result = pd.concat(result_list, ignore_index=True)
+
+    if result_list:
+        result = pd.concat(result_list, ignore_index=True)
+    else:
+        result = pd.DataFrame()
     
-    cols = ["DATE", "FEATURE"] + [col for col in result.columns if col not in ["DATE", "FEATURE"]]
-    result = result[cols]
+    if not result.empty:
+        cols = ["DATE", "FEATURE"] + [col for col in result.columns if col not in ["DATE", "FEATURE"]]
+        result = result[cols]
     
-    print(f"날짜별 트렌드 분석 결과: 총 {len(result)}개 날짜에서 이상 트렌드 감지")
+    print(
+        "날짜별 트렌드 분석 결과: "
+        f"변수 트렌드와 불량 트렌드가 동시에 이상인 총 {len(result)}개 날짜-변수 조합 감지"
+    )
     return result
-
-def corr_with_defect(df: pd.DataFrame, target_col: str, check_cols: list) -> pd.DataFrame:
-    """
-    각 변수(col)와 target_col 간 피어슨/스피어만 상관계수 계산
-    DATE 컬럼은 datetime → int64 timestamp로 변환 후 상관계수 계산
-    """
-
-    date_col = "DATE"
-    top_n = 10
-    
-    # df[date_col] = pd.to_datetime(df[date_col])
-
-    results = []
-
-    # 날짜별 상관계수 계산
-    for date, subdf in df.groupby(date_col):
-
-        for col in check_cols:
-
-            # 수치형만 처리
-            if not np.issubdtype(subdf[col].dtype, np.number):
-                continue
-
-            # 데이터 부족 시 상관계수 불가
-            valid = subdf[[col, target_col]].dropna()
-            
-            # 데이터 부족 or 값이 constant한 경우 → corr 계산 불가
-            if len(valid) < 2 or valid[col].nunique() < 2 or valid[target_col].nunique() < 2:
-                pearson_corr = np.nan
-                spearman_corr = np.nan
-            else:
-                pearson_corr = valid[col].corr(valid[target_col], method="pearson")
-                spearman_corr = valid[col].corr(valid[target_col], method="spearman")
-
-
-            results.append({
-                "DATE" : date,
-                "FEATURE": col,
-                "pearson": pearson_corr,
-                "spearman": spearman_corr
-            })
-
-    # DataFrame 변환
-    corr_df = pd.DataFrame(results)
-
-    # 변수별 평균 상관계수 계산
-    corr_df = corr_df.groupby(["DATE","FEATURE"]).agg({
-        "pearson": "mean",
-        "spearman": "mean"
-    }).reset_index()
-
-    # 절댓값 기준 상위 n개 변수 선택
-    corr_df["abs_mean_corr"] = corr_df["pearson"].abs()  # 기준: Pearson
-    corr_df = corr_df.sort_values("abs_mean_corr", ascending=False).head(top_n).reset_index(drop=True)
-
-    print(f"상관계수 분석 결과: 총 {len(corr_df)}개 변수에서 상관계수 계산 완료 (상위 {top_n}개 변수 선택)")
-    return corr_df

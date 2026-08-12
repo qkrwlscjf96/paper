@@ -1,6 +1,16 @@
 import pandas as pd
 
-def get_weighted_df(df, check_cols, index_mul, date_mul, static_1_result, static_2_result, static_3_result, static_4_result,feature_importance_result):
+
+def get_weighted_df(
+    df,
+    check_cols,
+    index_mul,
+    date_mul,
+    static_1_result,
+    static_2_result,
+    static_3_result,
+    feature_importance_result=None,
+):
     """가중치 적용된 DataFrame 생성 함수"""
     
     # 가중치 (통계 분석 기반)
@@ -25,7 +35,6 @@ def get_weighted_df(df, check_cols, index_mul, date_mul, static_1_result, static
     static_list = [
         ("flag_static1", static_1_result),
         ("flag_static3", static_3_result),
-        ("flag_static4", static_4_result),
     ]
 
     for flag_name, static_df in static_list:
@@ -55,6 +64,10 @@ def get_weighted_df(df, check_cols, index_mul, date_mul, static_1_result, static
     weight_df = weight_df.drop(columns=["INDEX"])
     
     # 가중치 (Feature Importance 기반)
+    if feature_importance_result is None or feature_importance_result.empty:
+        print("Feature importance 결과가 없어 통계 기반 가중치만 적용합니다.")
+        return weight_df
+
     feature_importance_result["WEIGHT"] = 1 + (feature_importance_result["importance"] / feature_importance_result["importance"].sum())
 
     weight_map = dict(

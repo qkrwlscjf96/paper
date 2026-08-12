@@ -41,20 +41,20 @@ def get_reader(filepath: str) -> FileReader:
 
 """실제 파일 읽기"""
 
-def load_data_df(data_name: str, base_path: Path):
+def load_data_df(data_name: str, data_path: str | os.PathLike):
     """
     data_name : '용해탱크', '사출성형기', '살균기', '소성가공'
     return : df, ng_df, target_col, check_cols
     """
 
-    data_path = base_path / "data"
-    file_paths = os.listdir(data_path)
+    DATA_PATH = Path(data_path)
+    file_paths = os.listdir(DATA_PATH)
 
     # 파일 찾기
     pick_file = [f for f in file_paths if data_name in f][0]
-    file_path = data_path / pick_file
+    FILE_PATH = DATA_PATH / pick_file
 
-    df = get_reader(file_path).read()
+    df = get_reader(FILE_PATH).read()
 
     # 날짜 컬럼 처리 (STD_DT 예외 처리)
     if data_name != "소성가공":
