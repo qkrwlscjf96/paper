@@ -77,3 +77,14 @@ def load_data_df(data_name: str, data_path: str | os.PathLike):
     ng_df = df[df[target_col[0]] == 1]
 
     return df, ng_df, target_col, check_cols, date_col
+
+
+def get_available_data_names(data_path: str | os.PathLike) -> list[str]:
+    data_dir = Path(data_path)
+    supported_suffixes = {".csv", ".xlsx", ".xls"}
+    data_names = sorted(
+        file_path.stem
+        for file_path in data_dir.iterdir()
+        if file_path.is_file() and file_path.suffix.lower() in supported_suffixes
+    )
+    return data_names

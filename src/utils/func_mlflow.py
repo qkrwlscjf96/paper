@@ -1,17 +1,18 @@
-import json
 import os
 import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 import mlflow
 import pandas as pd
 from mlflow import MlflowClient
+from mlflow.entities import ViewType
 
 from .func_model import model_training
 
 
 def get_mlflow_config(base_path: Path) -> dict:
-    TRACKING_DIR = Path(os.getenv("MLFLOW_TRACKING_DIR", str(base_path / "mlflow_data"))).expanduser()
+    TRACKING_DIR = Path(os.getenv("MLFLOW_TRACKING_DIR", str(base_path / "result" / "mlflow"))).expanduser()
     ARTIFACT_DIR = Path(os.getenv("MLFLOW_ARTIFACT_DIR", str(TRACKING_DIR / "artifacts"))).expanduser()
 
     DEFAULT_TRACKING_URI = f"sqlite:///{(TRACKING_DIR / 'mlflow.db').resolve().as_posix()}"
@@ -24,6 +25,31 @@ def get_mlflow_config(base_path: Path) -> dict:
         "tracking_uri": TRACKING_URI,
         "artifact_uri": ARTIFACT_URI,
     }
+
+
+def _is_remote_tracking_uri(tracking_uri: str) -> bool:
+    scheme = urlparse(tracking_uri).scheme
+    return scheme in {"http", "https"}
+
+
+def _get_experiment_any_state(client: MlflowClient, experiment_name: str):
+    experiments = client.search_experiments(view_type=ViewType.ALL)
+    for experiment in experiments:
+        if experiment.name == experiment_name:
+            return experiment
+    return None
+
+
+def _restore_if_deleted(client: MlflowClient, experiment):
+    if experiment is not None and experiment.lifecycle_stage == "deleted":
+        client.restore_experiment(experiment.experiment_id)
+        return client.get_experiment(experiment.experiment_id)
+    return experiment
+
+
+def _uses_mlflow_artifact_proxy(experiment) -> bool:
+    artifact_location = getattr(experiment, "artifact_location", "") or ""
+    return artifact_location.startswith("mlflow-artifacts:/")
 
 
 def configure_mlflow(base_path: Path, experiment_name: str) -> dict:
@@ -39,41 +65,65 @@ def configure_mlflow(base_path: Path, experiment_name: str) -> dict:
     mlflow.set_tracking_uri(TRACKING_URI)
     client = MlflowClient(tracking_uri=TRACKING_URI)
 
-    if client.get_experiment_by_name(experiment_name) is None:
-        client.create_experiment(experiment_name, artifact_location=ARTIFACT_URI)
+    experiment = _get_experiment_any_state(client, experiment_name)
+    experiment = _restore_if_deleted(client, experiment)
 
-    mlflow.set_experiment(experiment_name)
+    resolved_experiment_name = experiment_name
+
+    if (
+        experiment is not None
+        and not _is_remote_tracking_uri(TRACKING_URI)
+        and _uses_mlflow_artifact_proxy(experiment)
+    ):
+        resolved_experiment_name = f"{experiment_name}--local-artifacts"
+        experiment = _get_experiment_any_state(client, resolved_experiment_name)
+        experiment = _restore_if_deleted(client, experiment)
+
+    if experiment is None:
+        if _is_remote_tracking_uri(TRACKING_URI):
+            # Let the remote tracking server apply its own default artifact root.
+            client.create_experiment(resolved_experiment_name)
+        else:
+            client.create_experiment(resolved_experiment_name, artifact_location=ARTIFACT_URI)
+
+    mlflow.set_experiment(resolved_experiment_name)
+    config["resolved_experiment_name"] = resolved_experiment_name
     return config
 
 
-def make_experiment_name(prefix: str, data_name: str) -> str:
-    return f"{prefix}-{data_name}"
+def _sanitize_name_part(value) -> str:
+    return (
+        str(value)
+        .replace(" ", "")
+        .replace("(", "")
+        .replace(")", "")
+        .replace(",", "x")
+        .replace("[", "")
+        .replace("]", "")
+    )
 
 
-def parse_multiplier_values(env_name: str, default_values: list[int]) -> list[int]:
-    raw = os.getenv(env_name)
-    if not raw:
-        return default_values
+def _format_param_value(value) -> str:
+    if isinstance(value, (list, tuple)):
+        return ",".join(map(str, value))
+    return str(value)
 
-    values = []
-    for item in raw.split(","):
-        item = item.strip()
-        if not item:
+
+def make_name_from_params(prefix: str, params: dict, include_keys: list[str]) -> str:
+    parts = [prefix]
+    for key in include_keys:
+        if key not in params:
             continue
-        values.append(int(item))
+        value = _sanitize_name_part(_format_param_value(params[key]))
+        parts.append(f"{key}={value}")
+    return "--".join(parts)
 
-    return values or default_values
 
-
-def log_dict_artifact(data: dict, artifact_path: str) -> None:
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as temp_file:
-        json.dump(data, temp_file, ensure_ascii=False, indent=2)
-        temp_path = temp_file.name
-
-    try:
-        mlflow.log_artifact(temp_path, artifact_path=artifact_path)
-    finally:
-        os.remove(temp_path)
+def log_dataframe_artifact(df: pd.DataFrame, artifact_path: str, filename: str) -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        output_path = Path(temp_dir) / filename
+        df.to_csv(output_path, index=False)
+        mlflow.log_artifact(str(output_path), artifact_path=artifact_path)
 
 
 def run_and_log_model(
@@ -81,28 +131,35 @@ def run_and_log_model(
     df_to_train: pd.DataFrame,
     check_cols: list[str],
     target_col: list[str],
+    model_name: str,
+    model_params: dict,
     params: dict,
     tags: dict,
+    artifact_dataframes: dict[str, pd.DataFrame] | None = None,
     nested: bool = False,
 ) -> dict:
     with mlflow.start_run(run_name=run_name, nested=nested):
         mlflow.log_params(params)
         mlflow.set_tags(tags)
-        log_dict_artifact({"params": params, "tags": tags}, artifact_path="config")
+        if artifact_dataframes:
+            for artifact_name, artifact_df in artifact_dataframes.items():
+                log_dataframe_artifact(
+                    artifact_df,
+                    artifact_path="weighting_details",
+                    filename=f"{artifact_name}.csv",
+                )
 
-        metrics = model_training(df_to_train, check_cols, target_col)
-        mlflow.log_metric("accuracy", metrics["accuracy"])
-        mlflow.log_metric("validation_accuracy", metrics["validation_accuracy"])
-        mlflow.log_metric("cv_accuracy_mean", metrics["cv_accuracy_mean"])
-        mlflow.log_metric("cv_accuracy_std", metrics["cv_accuracy_std"])
-        log_dict_artifact(
-            {
-                "confusion_matrix": metrics["confusion_matrix"],
-                "classification_report": metrics["classification_report"],
-                "cv_fold_accuracies": metrics["cv_fold_accuracies"],
-                "model_params": metrics["model_params"],
-            },
-            artifact_path="metrics",
+        metrics = model_training(
+            df_to_train,
+            check_cols,
+            target_col,
+            model_name=model_name,
+            model_config=model_params,
         )
-        mlflow.log_text(metrics["classification_report_text"], "metrics/classification_report.txt")
+        mlflow.log_metric("test_accuracy", metrics["accuracy"])
+        mlflow.log_metric("validation_accuracy", metrics["validation_accuracy"])
+        mlflow.log_metric("cv_accuracy", metrics["cv_accuracy"])
+        mlflow.log_metric("cv_f1score", metrics["cv_f1_score"])
+        mlflow.log_metric("cv_precision", metrics["cv_precision"])
+        mlflow.log_metric("cv_recall", metrics["cv_recall"])
         return metrics

@@ -6,36 +6,40 @@ def get_weighted_df(
     check_cols,
     index_mul,
     date_mul,
-    static_1_result,
-    static_2_result,
-    static_3_result,
+    static_idx_result,
+    static_date_result,
     feature_importance_result=None,
+    return_diagnostics: bool = False,
 ):
     """가중치 적용된 DataFrame 생성 함수"""
+
+    diagnostics = {}
+    idx_weight_cols = list(check_cols)
+    print("Index 가중치는 feature importance와 무관하게 전체 check_cols에 적용합니다.")
     
     # 가중치 (통계 분석 기반)
     weight_base_df = df.copy()
 
     ## index별 가중치
-    static_2_result["flag_static2"] = 1
+    static_idx_result["flag_static_idx"] = 1
 
     weight_base_df = weight_base_df.merge(
-        static_2_result,
+        static_idx_result,
         on=weight_base_df.columns.tolist(),
         how="left"
     )
 
-    weight_base_df.loc[weight_base_df["flag_static2"] == 1, check_cols] *= index_mul
-    weight_base_df = weight_base_df.drop(columns=["flag_static2"])
+    if idx_weight_cols:
+        weight_base_df.loc[weight_base_df["flag_static_idx"] == 1, idx_weight_cols] *= index_mul
+    weight_base_df = weight_base_df.drop(columns=["flag_static_idx"])
+    diagnostics["index_weighted_rows"] = static_idx_result.copy()
+    diagnostics["index_weighted_features"] = pd.DataFrame({"FEATURE": idx_weight_cols})
 
     ## 날짜별 가중치
     weight_base_df["INDEX"] = weight_base_df.index
     temp_weight_df = weight_base_df.melt(id_vars=["INDEX", "DATE"], var_name="FEATURE", value_name="VALUE")
 
-    static_list = [
-        ("flag_static1", static_1_result),
-        ("flag_static3", static_3_result),
-    ]
+    static_list = [("flag_static_date", static_date_result)]
 
     for flag_name, static_df in static_list:
         temp_weight_df = temp_weight_df.merge(
@@ -54,6 +58,9 @@ def get_weighted_df(
     )
 
     temp_weight_df["VALUE"] *= multiplier
+    diagnostics["date_feature_weighted_rows"] = temp_weight_df[
+        temp_weight_df[flag_cols].fillna(0).any(axis=1)
+    ].copy()
 
     weight_df = (
         temp_weight_df[["INDEX", "DATE", "FEATURE", "VALUE"]]
@@ -66,9 +73,25 @@ def get_weighted_df(
     # 가중치 (Feature Importance 기반)
     if feature_importance_result is None or feature_importance_result.empty:
         print("Feature importance 결과가 없어 통계 기반 가중치만 적용합니다.")
+        diagnostics["feature_importance_weights"] = pd.DataFrame(columns=["FEATURE", "WEIGHT"])
+        diagnostics["weighting_summary"] = pd.DataFrame(
+            [
+                {
+                    "index_weighted_row_count": len(static_idx_result),
+                    "index_weighted_feature_count": len(idx_weight_cols),
+                    "date_feature_weighted_count": len(diagnostics["date_feature_weighted_rows"]),
+                    "feature_importance_feature_count": 0,
+                }
+            ]
+        )
+        if return_diagnostics:
+            return weight_df, diagnostics
         return weight_df
 
-    feature_importance_result["WEIGHT"] = 1 + (feature_importance_result["importance"] / feature_importance_result["importance"].sum())
+    feature_importance_result = feature_importance_result.copy()
+    feature_importance_result["WEIGHT"] = 1 + (
+        feature_importance_result["importance"] / feature_importance_result["importance"].sum()
+    )
 
     weight_map = dict(
         zip(
@@ -83,6 +106,20 @@ def get_weighted_df(
         weight_df[common_cols]
         .mul(pd.Series(weight_map), axis=1)
     )
+
+    diagnostics["feature_importance_weights"] = feature_importance_result.copy()
+    diagnostics["weighting_summary"] = pd.DataFrame(
+        [
+            {
+                "index_weighted_row_count": len(static_idx_result),
+                "index_weighted_feature_count": len(idx_weight_cols),
+                "date_feature_weighted_count": len(diagnostics["date_feature_weighted_rows"]),
+                "feature_importance_feature_count": len(feature_importance_result),
+            }
+        ]
+    )
     
     print("가중치 적용된 df 생성 완료")
+    if return_diagnostics:
+        return weight_df, diagnostics
     return weight_df

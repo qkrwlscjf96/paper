@@ -2,6 +2,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import pandas as pd
+import seaborn as sns
 
 
 def plot_boxplots_by_date(
@@ -9,14 +10,42 @@ def plot_boxplots_by_date(
     check_cols: list,
     target_col: str = "TAG",
     output_dir: str | Path | None = None,
+    static_idx_result: pd.DataFrame | None = None,
+    static_idx_detail_result: pd.DataFrame | None = None,
+    static_date_result: pd.DataFrame | None = None,
 ) -> dict[str, str]:
     """EDA 결과물을 저장하는 시각화 함수."""
     plt.style.use("ggplot")
+    sns.set_theme(style="whitegrid")
 
     output_path = Path(output_dir) if output_dir is not None else Path("result") / "eda"
     output_path.mkdir(parents=True, exist_ok=True)
 
     valid_cols = [col for col in check_cols if pd.api.types.is_numeric_dtype(df[col])]
+    static_idx_df = static_idx_result.copy() if static_idx_result is not None else pd.DataFrame()
+    static_idx_detail_df = (
+        static_idx_detail_result.copy()
+        if static_idx_detail_result is not None
+        else pd.DataFrame()
+    )
+    static_date_df = static_date_result.copy() if static_date_result is not None else pd.DataFrame()
+
+    if not static_idx_detail_df.empty:
+        idx_highlight_df = static_idx_detail_df[["DATE", "FEATURE", "VALUE"]].dropna(subset=["VALUE"]).copy()
+    elif not static_idx_df.empty and valid_cols:
+        idx_highlight_df = static_idx_df.melt(
+            id_vars=["DATE"],
+            value_vars=[col for col in valid_cols if col in static_idx_df.columns],
+            var_name="FEATURE",
+            value_name="VALUE",
+        ).dropna(subset=["VALUE"])
+    else:
+        idx_highlight_df = pd.DataFrame(columns=["DATE", "FEATURE", "VALUE"])
+
+    if not static_date_df.empty:
+        date_highlight_df = static_date_df[["DATE", "FEATURE"]].drop_duplicates().copy()
+    else:
+        date_highlight_df = pd.DataFrame(columns=["DATE", "FEATURE"])
 
     overview_df = (
         df.assign(IS_NG=df[target_col].astype(int))
@@ -64,7 +93,7 @@ def plot_boxplots_by_date(
     feature_summary_df.to_csv(feature_csv, index=False)
 
     plt.figure(figsize=(14, 5))
-    plt.plot(overview_df["DATE"], overview_df["ng_rate"], marker="o")
+    sns.lineplot(data=overview_df, x="DATE", y="ng_rate", marker="o", linewidth=1.8)
     plt.title("NG Rate by Date")
     plt.xlabel("DATE")
     plt.ylabel("NG Rate")
@@ -91,6 +120,23 @@ def plot_boxplots_by_date(
                     color=colors.get(tag_value, "#7f7f7f"),
                     label=f"{target_col}={tag_value}",
                 )
+            highlight_subset = idx_highlight_df.loc[
+                idx_highlight_df["FEATURE"] == col,
+                ["DATE", "VALUE"],
+            ]
+            if not highlight_subset.empty:
+                highlight_subset = highlight_subset.rename(columns={"VALUE": col})
+                if not highlight_subset.empty:
+                    ax.scatter(
+                        highlight_subset["DATE"],
+                        highlight_subset[col],
+                        s=70,
+                        marker="D",
+                        facecolors="none",
+                        edgecolors="#ffbf00",
+                        linewidths=1.5,
+                        label="idx weighted",
+                    )
             ax.set_title(f"{col} Scatter by Date")
             ax.set_xlabel("DATE")
             ax.set_ylabel(col)
@@ -106,11 +152,52 @@ def plot_boxplots_by_date(
         fig, axes = plt.subplots(scatter_rows, 1, figsize=(16, 4 * scatter_rows), squeeze=False)
 
         for ax, col in zip(axes.flatten(), valid_cols):
-            ax.plot(daily_mean_df["DATE"], daily_mean_df[col], color="#2ca02c", linewidth=1.8)
-            ax.set_title(f"{col} Time Series by Date")
+            sns.lineplot(
+                data=daily_mean_df,
+                x="DATE",
+                y=col,
+                ax=ax,
+                color="#2ca02c",
+                linewidth=1.8,
+                marker="o",
+                label=col,
+            )
+            if not date_highlight_df.empty:
+                date_flags = date_highlight_df.loc[date_highlight_df["FEATURE"] == col, ["DATE"]].drop_duplicates()
+                highlighted_means = daily_mean_df.merge(date_flags, on="DATE", how="inner")
+                if not highlighted_means.empty:
+                    ax.scatter(
+                        highlighted_means["DATE"],
+                        highlighted_means[col],
+                        s=90,
+                        marker="D",
+                        color="#ffbf00",
+                        edgecolors="black",
+                        linewidths=0.8,
+                        zorder=5,
+                        label="date weighted",
+                    )
+            ax2 = ax.twinx()
+            sns.lineplot(
+                data=overview_df,
+                x="DATE",
+                y="ng_rate",
+                ax=ax2,
+                color="#d62728",
+                linewidth=1.8,
+                marker="o",
+                label="ng_rate",
+            )
+            ax.set_title(f"{col} and NG Rate by Date")
             ax.set_xlabel("DATE")
             ax.set_ylabel(col)
+            ax2.set_ylabel("NG Rate")
             ax.tick_params(axis="x", rotation=45)
+            lines_1, labels_1 = ax.get_legend_handles_labels()
+            lines_2, labels_2 = ax2.get_legend_handles_labels()
+            ax.legend(lines_1 + lines_2, labels_1 + labels_2, loc="upper right")
+            if ax2.legend_ is not None:
+                ax2.legend_.remove()
 
         fig.tight_layout()
         timeseries_path = output_path / "all_features_timeseries.png"
