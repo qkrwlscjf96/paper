@@ -357,6 +357,7 @@ def run_pipeline_for_data(data_name: str) -> None:
             check_cols=check_cols,
             target_col=target_col[0],
             output_dir=eda_output_dir,
+            feature_importance_result=feature_importance_result,
             static_idx_result=static_idx_result,
             static_idx_detail_result=static_idx_detail_result,
             static_date_result=static_date_result,

@@ -10,6 +10,7 @@ def plot_boxplots_by_date(
     check_cols: list,
     target_col: str = "TAG",
     output_dir: str | Path | None = None,
+    feature_importance_result: pd.DataFrame | None = None,
     static_idx_result: pd.DataFrame | None = None,
     static_idx_detail_result: pd.DataFrame | None = None,
     static_date_result: pd.DataFrame | None = None,
@@ -29,6 +30,11 @@ def plot_boxplots_by_date(
         else pd.DataFrame()
     )
     static_date_df = static_date_result.copy() if static_date_result is not None else pd.DataFrame()
+    feature_importance_df = (
+        feature_importance_result.copy()
+        if feature_importance_result is not None
+        else pd.DataFrame()
+    )
 
     if not static_idx_detail_df.empty:
         idx_highlight_df = static_idx_detail_df[["DATE", "FEATURE", "VALUE"]].dropna(subset=["VALUE"]).copy()
@@ -91,6 +97,10 @@ def plot_boxplots_by_date(
     feature_csv = output_path / "feature_summary.csv"
     overview_df.to_csv(overview_csv, index=False)
     feature_summary_df.to_csv(feature_csv, index=False)
+    feature_importance_csv = output_path / "feature_importance_summary.csv"
+    if not feature_importance_df.empty:
+        feature_importance_df.to_csv(feature_importance_csv, index=False)
+    feature_importance_plot_path = None
 
     plt.figure(figsize=(14, 5))
     sns.lineplot(data=overview_df, x="DATE", y="ng_rate", marker="o", linewidth=1.8)
@@ -102,6 +112,19 @@ def plot_boxplots_by_date(
     ng_rate_path = output_path / "ng_rate_by_date.png"
     plt.savefig(ng_rate_path, dpi=180, bbox_inches="tight")
     plt.close()
+
+    if not feature_importance_df.empty and {"FEATURE", "importance"}.issubset(feature_importance_df.columns):
+        plot_df = feature_importance_df.head(20).copy()
+        plot_df = plot_df.sort_values("importance", ascending=True)
+        plt.figure(figsize=(12, max(5, len(plot_df) * 0.45)))
+        sns.barplot(data=plot_df, x="importance", y="FEATURE", color="#4c72b0")
+        plt.title("Top Feature Importance")
+        plt.xlabel("Importance")
+        plt.ylabel("Feature")
+        plt.tight_layout()
+        feature_importance_plot_path = output_path / "feature_importance_top20.png"
+        plt.savefig(feature_importance_plot_path, dpi=180, bbox_inches="tight")
+        plt.close()
 
     if valid_cols:
         scatter_rows = len(valid_cols)
@@ -250,6 +273,10 @@ def plot_boxplots_by_date(
         "output_dir": str(output_path),
         "date_overview_csv": str(overview_csv),
         "feature_summary_csv": str(feature_csv),
+        "feature_importance_csv": str(feature_importance_csv) if feature_importance_csv.exists() else "",
+        "feature_importance_plot": (
+            str(feature_importance_plot_path) if feature_importance_plot_path else ""
+        ),
         "ng_rate_plot": str(ng_rate_path),
         "all_features_scatter": str(scatter_path) if scatter_path else "",
         "all_features_timeseries": str(timeseries_path) if timeseries_path else "",
