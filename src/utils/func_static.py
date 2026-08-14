@@ -8,6 +8,36 @@ def _ensure_date_series(df: pd.DataFrame, date_col: str = "DATE") -> pd.DataFram
     return result
 
 
+def _normalize_index_result(result: pd.DataFrame) -> pd.DataFrame:
+    normalized = result.copy()
+    if "INDEX" not in normalized.columns:
+        normalized["INDEX"] = normalized.index
+    if "DATE" in normalized.columns:
+        normalized["DATE"] = pd.to_datetime(normalized["DATE"])
+
+    ordered_cols = ["INDEX"]
+    if "DATE" in normalized.columns:
+        ordered_cols.append("DATE")
+    ordered_cols.extend(col for col in normalized.columns if col not in ordered_cols)
+    return normalized[ordered_cols].reset_index(drop=True)
+
+
+def _empty_date_feature_result() -> pd.DataFrame:
+    return pd.DataFrame(columns=["DATE", "FEATURE"])
+
+
+def _normalize_date_feature_result(result: pd.DataFrame) -> pd.DataFrame:
+    if result.empty:
+        return _empty_date_feature_result()
+
+    normalized = result.copy()
+    normalized["DATE"] = pd.to_datetime(normalized["DATE"])
+    ordered_cols = ["DATE", "FEATURE"] + [
+        col for col in normalized.columns if col not in ["DATE", "FEATURE"]
+    ]
+    return normalized[ordered_cols].reset_index(drop=True)
+
+
 class FuncStaticV1:
     """기존 통계 분석 로직 모음."""
 
@@ -57,8 +87,9 @@ class FuncStaticV1:
             else:
                 outlier_mask[col] = full_df[col] > upper
 
-        outlier_rows = full_df[outlier_mask.any(axis=1)]
-        outlier_rows = outlier_rows.drop_duplicates().reset_index(drop=True)
+        outlier_rows = full_df[outlier_mask.any(axis=1)].copy()
+        outlier_rows["INDEX"] = outlier_rows.index
+        outlier_rows = _normalize_index_result(outlier_rows.drop_duplicates(subset=["INDEX"]))
         outlier_detail_list = []
 
         for col in check_cols:
@@ -67,14 +98,15 @@ class FuncStaticV1:
                 continue
 
             detail_df = full_df.loc[col_mask, ["DATE", col]].copy()
+            detail_df["INDEX"] = detail_df.index
             detail_df = detail_df.rename(columns={col: "VALUE"})
             detail_df["FEATURE"] = col
-            outlier_detail_list.append(detail_df[["DATE", "FEATURE", "VALUE"]])
+            outlier_detail_list.append(detail_df[["INDEX", "DATE", "FEATURE", "VALUE"]])
 
         if outlier_detail_list:
-            outlier_detail_df = pd.concat(outlier_detail_list, ignore_index=True)
+            outlier_detail_df = _normalize_index_result(pd.concat(outlier_detail_list, ignore_index=True))
         else:
-            outlier_detail_df = pd.DataFrame(columns=["DATE", "FEATURE", "VALUE"])
+            outlier_detail_df = pd.DataFrame(columns=["INDEX", "DATE", "FEATURE", "VALUE"])
 
         print(
             "IQR 기반 이상치 탐지 결과: "
@@ -148,7 +180,7 @@ class FuncStaticV1:
         ].copy()
         if defect_anchor_df.empty:
             print("날짜별 high defect 분석 결과: defect_rate 높은 anchor 날짜를 찾지 못함")
-            return pd.DataFrame()
+            return _empty_date_feature_result()
 
         result_list = []
 
@@ -236,11 +268,9 @@ class FuncStaticV1:
         if result_list:
             result = pd.concat(result_list, ignore_index=True)
         else:
-            result = pd.DataFrame()
+            result = _empty_date_feature_result()
 
-        if not result.empty:
-            cols = ["DATE", "FEATURE"] + [col for col in result.columns if col not in ["DATE", "FEATURE"]]
-            result = result[cols]
+        result = _normalize_date_feature_result(result)
 
         print(
             "날짜별 high defect 분석 결과: "
@@ -284,9 +314,9 @@ class FuncStaticV2:
                     "DATE",
                     "FEATURE",
                     "VALUE",
-                    "ROBUST_ZSCORE",
-                    "MEDIAN",
-                    "MAD",
+                    "robust_zscore",
+                    "median",
+                    "mad",
                 ]
             )
             print("전체 산포 기반 index weighting 결과: 사용할 수 있는 수치형 check_cols가 없습니다.")
@@ -322,7 +352,7 @@ class FuncStaticV2:
 
         flagged_rows = df.loc[flagged_index].copy()
         flagged_rows["INDEX"] = flagged_rows.index
-        flagged_rows = flagged_rows.reset_index(drop=True)
+        flagged_rows = _normalize_index_result(flagged_rows)
 
         print(
             "전체 산포 기반 index weighting 결과: "
@@ -344,18 +374,18 @@ class FuncStaticV2:
             detail_df["INDEX"] = detail_df.index
             detail_df["FEATURE"] = col
             detail_df["VALUE"] = detail_df[col]
-            detail_df["ROBUST_ZSCORE"] = robust_zscore_df.loc[col_mask, col].to_numpy()
-            detail_df["MEDIAN"] = median
-            detail_df["MAD"] = mad
+            detail_df["robust_zscore"] = robust_zscore_df.loc[col_mask, col].to_numpy()
+            detail_df["median"] = median
+            detail_df["mad"] = mad
             detail_frames.append(
-                detail_df[["INDEX", "DATE", "FEATURE", "VALUE", "ROBUST_ZSCORE", "MEDIAN", "MAD"]]
+                detail_df[["INDEX", "DATE", "FEATURE", "VALUE", "robust_zscore", "median", "mad"]]
             )
 
         if detail_frames:
-            details = pd.concat(detail_frames, ignore_index=True)
+            details = _normalize_index_result(pd.concat(detail_frames, ignore_index=True))
         else:
             details = pd.DataFrame(
-                columns=["INDEX", "DATE", "FEATURE", "VALUE", "ROBUST_ZSCORE", "MEDIAN", "MAD"]
+                columns=["INDEX", "DATE", "FEATURE", "VALUE", "robust_zscore", "median", "mad"]
             )
         return flagged_rows, details
 
@@ -468,7 +498,7 @@ class FuncStaticV2:
         )
         if len(defect_daily_df) < max(2, min_segment_size * 2):
             print("PELT 기반 date weighting 결과: 분석 가능한 날짜 수가 부족합니다.")
-            return pd.DataFrame(columns=["DATE", "FEATURE"])
+            return _empty_date_feature_result()
 
         defect_values = defect_daily_df["defect_rate"].to_numpy(dtype=float)
         defect_std = float(np.nanstd(defect_values))
@@ -476,7 +506,7 @@ class FuncStaticV2:
         defect_cp_idx = FuncStaticV2._pelt_mean_shift(defect_values, defect_penalty, min_segment_size)
         if not defect_cp_idx:
             print("PELT 기반 date weighting 결과: defect rate change point를 찾지 못했습니다.")
-            return pd.DataFrame(columns=["DATE", "FEATURE"])
+            return _empty_date_feature_result()
 
         feature_daily_df = FuncStaticV2._prepare_daily_feature_means(df, check_cols, date_col=date_col)
         result_rows: list[dict[str, object]] = []
@@ -546,7 +576,7 @@ class FuncStaticV2:
                 )
 
         if not result_rows:
-            result = pd.DataFrame(columns=["DATE", "FEATURE"])
+            result = _empty_date_feature_result()
         else:
             result = (
                 pd.DataFrame(result_rows)
@@ -557,6 +587,8 @@ class FuncStaticV2:
                 .drop_duplicates(subset=["DATE", "FEATURE"])
                 .reset_index(drop=True)
             )
+
+        result = _normalize_date_feature_result(result)
 
         print(
             "PELT 기반 date weighting 결과: "

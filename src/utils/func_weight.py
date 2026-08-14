@@ -20,7 +20,7 @@ def get_weighted_df(
     static_idx_result = (
         static_idx_result.copy()
         if static_idx_result is not None
-        else pd.DataFrame(columns=df.columns)
+        else pd.DataFrame(columns=["INDEX"])
     )
     static_date_result = (
         static_date_result.copy()
@@ -34,24 +34,16 @@ def get_weighted_df(
 
     ## index별 가중치
     if not static_idx_result.empty:
-        if "INDEX" in static_idx_result.columns:
-            static_idx_flags = (
-                static_idx_result[["INDEX"]]
-                .drop_duplicates()
-                .assign(flag_static_idx=1)
-            )
-            weight_base_df = weight_base_df.merge(
-                static_idx_flags,
-                on="INDEX",
-                how="left"
-            )
-        else:
-            static_idx_result["flag_static_idx"] = 1
-            weight_base_df = weight_base_df.merge(
-                static_idx_result,
-                on=df.columns.tolist(),
-                how="left"
-            )
+        static_idx_flags = (
+            static_idx_result[["INDEX"]]
+            .drop_duplicates()
+            .assign(flag_static_idx=1)
+        )
+        weight_base_df = weight_base_df.merge(
+            static_idx_flags,
+            on="INDEX",
+            how="left"
+        )
     else:
         weight_base_df["flag_static_idx"] = pd.NA
 

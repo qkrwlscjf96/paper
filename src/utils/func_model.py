@@ -17,7 +17,6 @@ from sklearn.metrics import (
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler
-from sklearn.svm import SVC
 
 
 def _validate_unit_interval(metric_name: str, value: float) -> float:
@@ -57,7 +56,6 @@ def get_supported_model_names() -> list[str]:
         "LogisticRegression",
         "RandomForestClassifier",
         "GradientBoostingClassifier",
-        "SVC",
         "XGBClassifier",
     ]
 
@@ -120,14 +118,6 @@ def get_model_config_from_env(model_name: str) -> dict:
             "random_state": int(os.getenv("GRADIENT_BOOSTING_RANDOM_STATE", "42")),
         }
 
-    if model_name == "SVC":
-        return {
-            "C": float(os.getenv("SVC_C", "1.0")),
-            "kernel": os.getenv("SVC_KERNEL", "rbf"),
-            "gamma": os.getenv("SVC_GAMMA", "scale"),
-            "probability": _parse_bool(os.getenv("SVC_PROBABILITY", "False"), False),
-        }
-
     if model_name == "XGBClassifier":
         return {
             "n_estimators": int(os.getenv("XGB_N_ESTIMATORS", "200")),
@@ -182,8 +172,6 @@ def _build_model(model_name: str, model_config: dict | None = None):
         return RandomForestClassifier(**model_config)
     if model_name == "GradientBoostingClassifier":
         return GradientBoostingClassifier(**model_config)
-    if model_name == "SVC":
-        return SVC(**model_config)
     if model_name == "XGBClassifier":
         return xgb.XGBClassifier(**model_config)
 

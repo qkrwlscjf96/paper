@@ -22,8 +22,6 @@ def xgboost_feature_importance(
             "importance_sum": 0.0,
             "selected_count": 0,
             "top_k_count": 0,
-            "rank_sum": 0.0,
-            "best_rank": None,
         }
         for feature in X.columns
     }
@@ -75,14 +73,10 @@ def xgboost_feature_importance(
         selected_run_count += 1
         top_features = set(run_importance.head(top_k)["FEATURE"])
 
-        for rank, row in enumerate(run_importance.itertuples(index=False), start=1):
+        for row in run_importance.itertuples(index=False):
             feature = row.FEATURE
             aggregate[feature]["importance_sum"] += float(row.importance)
             aggregate[feature]["selected_count"] += 1
-            aggregate[feature]["rank_sum"] += rank
-            aggregate[feature]["best_rank"] = rank if aggregate[feature]["best_rank"] is None else min(
-                aggregate[feature]["best_rank"], rank
-            )
             if feature in top_features:
                 aggregate[feature]["top_k_count"] += 1
 
@@ -103,24 +97,19 @@ def xgboost_feature_importance(
         if stats["selected_count"] == 0:
             continue
         mean_importance = stats["importance_sum"] / stats["selected_count"]
-        mean_rank = stats["rank_sum"] / stats["selected_count"]
         summary_rows.append(
             {
                 "FEATURE": feature,
                 "importance": mean_importance,
                 "top_k_count": stats["top_k_count"],
-                "top_k_ratio": stats["top_k_count"] / selected_run_count,
-                "selected_count": stats["selected_count"],
-                "mean_rank": mean_rank,
-                "best_rank": stats["best_rank"],
             }
         )
 
     importance_df = (
         pd.DataFrame(summary_rows)
         .sort_values(
-            by=["top_k_count", "top_k_ratio", "importance", "mean_rank"],
-            ascending=[False, False, False, True],
+            by=["top_k_count", "importance"],
+            ascending=[False, False],
         )
         .reset_index(drop=True)
     )

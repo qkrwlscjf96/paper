@@ -1,7 +1,7 @@
 ## 논문 개요
 ![서강대학교 데이터 사이언스 전공 석사 졸업논문 개요](images/README.png)
 
-## 프로세스 구조
+## 프로세스
 
 1. 데이터 로드
 2. Feature importance 및 통계 분석
@@ -175,10 +175,11 @@ docker run --rm \
 
 ```bash
 docker run --rm \
-  -e EXPERIMENT_PREFIX="[static_v2]" \
+  -e EXPERIMENT_PREFIX="[static_v1_260815]" \
   -e DATA_NAMES="all" \
   -e MODEL_NAMES="all" \
-  -e STATIC_VERSION="v2" \
+  -e STATIC_VERSION="v1" \
+  -e FEATURE_IMPORTANCE_F1_THRESHOLD=0.6 \
   -e RUN_DATA_LOADER=1 \
   -e RUN_EDA=0 \
   -e RUN_ANALYSIS=1 \
