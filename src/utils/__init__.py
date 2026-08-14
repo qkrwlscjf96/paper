@@ -1,10 +1,14 @@
 """Public utilities used by ``main.py`` and other modules."""
 
 from .func_common import get_available_data_names, load_data_df
-from .func_eda import plot_boxplots_by_date
+from .func_eda import generate_eda_outputs
 from .func_static import (
-    date_trend,
-    outlier_remover,
+    FuncStaticV1,
+    FuncStaticV2,
+    anchor_window_date_trend,
+    iqr_remover,
+    pchart_remover,
+    pelt_cpd_date_trend,
 )
 from .func_weight import get_weighted_df
 
@@ -43,7 +47,9 @@ except ModuleNotFoundError:
 
 __all__ = [
     "configure_mlflow",
-    "date_trend",
+    "anchor_window_date_trend",
+    "FuncStaticV1",
+    "FuncStaticV2",
     "get_available_data_names",
     "get_model_config_from_env",
     "get_model_run_configs_from_env",
@@ -53,8 +59,10 @@ __all__ = [
     "load_data_df",
     "make_name_from_params",
     "model_training",
-    "outlier_remover",
-    "plot_boxplots_by_date",
+    "iqr_remover",
+    "pchart_remover",
+    "pelt_cpd_date_trend",
+    "generate_eda_outputs",
     "resolve_model_config",
     "run_and_log_model",
     "xgboost_feature_importance",

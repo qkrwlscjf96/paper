@@ -1,7 +1,17 @@
-from abc import ABC, abstractmethod
-import pandas as pd
 import os
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Callable
+
+import pandas as pd
+
+from .func_static import (
+    anchor_window_date_trend,
+    iqr_remover,
+    pchart_remover,
+    pelt_cpd_date_trend,
+)
 
 """파일 읽기 (CSV, Excel)"""
 # 1추상 클래스 (공통 인터페이스)
@@ -88,3 +98,540 @@ def get_available_data_names(data_path: str | os.PathLike) -> list[str]:
         if file_path.is_file() and file_path.suffix.lower() in supported_suffixes
     )
     return data_names
+
+
+"""파이프라인 설정 / 실행 공통"""
+
+
+@dataclass(frozen=True)
+class PathConfig:
+    base_path: Path
+    data_path: Path
+    result_path: Path
+    eda_result_path: Path
+
+
+@dataclass(frozen=True)
+class RunSwitches:
+    run_data_loader: bool
+    run_eda: bool
+    run_analysis: bool
+    run_modeling: bool
+    effective_run_data_loader: bool
+    effective_run_analysis: bool
+
+
+@dataclass(frozen=True)
+class StaticAnalysisConfig:
+    version: str
+    index_fn: Callable
+    date_fn: Callable
+    params: dict[str, object]
+
+
+@dataclass(frozen=True)
+class PipelineConfig:
+    paths: PathConfig
+    switches: RunSwitches
+    data_name: str
+    data_names_raw: str
+    experiment_name: str
+    experiment_prefix: str
+    feature_importance_params: dict[str, object]
+    static_analysis: StaticAnalysisConfig
+    weight_params: dict[str, object]
+
+    @property
+    def analysis_params(self) -> dict[str, object]:
+        return {
+            **self.static_analysis.params,
+            **self.feature_importance_params,
+        }
+
+
+def _read_user_input(user_inputs: dict[str, Any] | None, *keys: str) -> Any:
+    current = user_inputs or {}
+    for key in keys:
+        if not isinstance(current, dict) or key not in current:
+            return None
+        current = current[key]
+    return current
+
+
+def _resolve_user_or_env(
+    user_inputs: dict[str, Any] | None,
+    input_keys: tuple[str, ...],
+    env_key: str,
+    default: Any,
+    caster: Callable[[Any], Any] | None = None,
+) -> Any:
+    env_value = os.getenv(env_key)
+    if env_value is not None:
+        return caster(env_value) if caster is not None else env_value
+    user_value = _read_user_input(user_inputs, *input_keys)
+    if user_value is not None:
+        return caster(user_value) if caster is not None else user_value
+    return caster(default) if caster is not None else default
+
+
+def load_pipeline_config(base_path: Path, user_inputs: dict[str, Any] | None = None) -> PipelineConfig:
+    result_path = base_path / "result"
+    eda_result_path = result_path / "eda"
+    eda_output_subdir = _resolve_user_or_env(
+        user_inputs,
+        ("data", "eda_output_subdir"),
+        "EDA_OUTPUT_SUBDIR",
+        "",
+        str,
+    ).strip()
+    if eda_output_subdir:
+        eda_result_path = eda_result_path / eda_output_subdir
+
+    run_data_loader = _resolve_user_or_env(
+        user_inputs, ("steps", "run_data_loader"), "RUN_DATA_LOADER", True, lambda value: str(value) == "1" if isinstance(value, str) else bool(value)
+    )
+    run_eda = _resolve_user_or_env(
+        user_inputs, ("steps", "run_eda"), "RUN_EDA", True, lambda value: str(value) == "1" if isinstance(value, str) else bool(value)
+    )
+    run_analysis = _resolve_user_or_env(
+        user_inputs, ("steps", "run_analysis"), "RUN_ANALYSIS", True, lambda value: str(value) == "1" if isinstance(value, str) else bool(value)
+    )
+    run_modeling = _resolve_user_or_env(
+        user_inputs, ("steps", "run_modeling"), "RUN_MODELING", True, lambda value: str(value) == "1" if isinstance(value, str) else bool(value)
+    )
+
+    switches = RunSwitches(
+        run_data_loader=run_data_loader,
+        run_eda=run_eda,
+        run_analysis=run_analysis,
+        run_modeling=run_modeling,
+        effective_run_data_loader=run_data_loader or run_eda or run_analysis or run_modeling,
+        effective_run_analysis=run_analysis or run_eda or run_modeling,
+    )
+
+    static_version = _resolve_user_or_env(
+        user_inputs, ("static", "version"), "STATIC_VERSION", "v2", str
+    ).strip().lower()
+    if static_version == "v1":
+        static_analysis = StaticAnalysisConfig(
+            version=static_version,
+            index_fn=iqr_remover,
+            date_fn=anchor_window_date_trend,
+            params={
+                "static_version": static_version,
+                "iqr_directional_corr_threshold": _resolve_user_or_env(
+                    user_inputs,
+                    ("static", "v1", "iqr_directional_corr_threshold"),
+                    "IQR_DIRECTIONAL_CORR_THRESHOLD",
+                    os.getenv("OUTLIER_DIRECTIONAL_CORR_THRESHOLD", "0.3"),
+                    float,
+                ),
+                "anchor_context_days": _resolve_user_or_env(
+                    user_inputs,
+                    ("static", "v1", "anchor_context_days"),
+                    "ANCHOR_CONTEXT_DAYS",
+                    os.getenv("DATE_TREND_CONTEXT_DAYS", "2"),
+                    int,
+                ),
+                "anchor_min_window_points": _resolve_user_or_env(
+                    user_inputs,
+                    ("static", "v1", "anchor_min_window_points"),
+                    "ANCHOR_MIN_WINDOW_POINTS",
+                    os.getenv("DATE_TREND_MIN_WINDOW_POINTS", "4"),
+                    int,
+                ),
+                "anchor_min_rate_quantile": _resolve_user_or_env(
+                    user_inputs,
+                    ("static", "v1", "anchor_min_rate_quantile"),
+                    "ANCHOR_MIN_RATE_QUANTILE",
+                    os.getenv("DATE_TREND_MIN_ANCHOR_RATE_QUANTILE", "0.8"),
+                    float,
+                ),
+                "anchor_min_level_score": _resolve_user_or_env(
+                    user_inputs,
+                    ("static", "v1", "anchor_min_level_score"),
+                    "ANCHOR_MIN_LEVEL_SCORE",
+                    os.getenv("DATE_TREND_MIN_LEVEL_SCORE", "0.5"),
+                    float,
+                ),
+                "anchor_min_sign_agreement": _resolve_user_or_env(
+                    user_inputs,
+                    ("static", "v1", "anchor_min_sign_agreement"),
+                    "ANCHOR_MIN_SIGN_AGREEMENT",
+                    os.getenv("DATE_TREND_MIN_SIGN_AGREEMENT", "0.5"),
+                    float,
+                ),
+            },
+        )
+    elif static_version == "v2":
+        static_analysis = StaticAnalysisConfig(
+            version=static_version,
+            index_fn=pchart_remover,
+            date_fn=pelt_cpd_date_trend,
+            params={
+                "static_version": static_version,
+                "p_chart_sigma_level": _resolve_user_or_env(
+                    user_inputs,
+                    ("static", "v2", "p_chart_sigma_level"),
+                    "P_CHART_SIGMA_LEVEL",
+                    "3.0",
+                    float,
+                ),
+                "p_chart_min_subgroup_size": _resolve_user_or_env(
+                    user_inputs,
+                    ("static", "v2", "p_chart_min_subgroup_size"),
+                    "P_CHART_MIN_SUBGROUP_SIZE",
+                    "1",
+                    int,
+                ),
+                "pelt_penalty_scale": _resolve_user_or_env(
+                    user_inputs,
+                    ("static", "v2", "pelt_penalty_scale"),
+                    "PELT_PENALTY_SCALE",
+                    "1.0",
+                    float,
+                ),
+                "pelt_min_segment_size": _resolve_user_or_env(
+                    user_inputs,
+                    ("static", "v2", "pelt_min_segment_size"),
+                    "PELT_MIN_SEGMENT_SIZE",
+                    "3",
+                    int,
+                ),
+                "pelt_change_point_tolerance_days": _resolve_user_or_env(
+                    user_inputs,
+                    ("static", "v2", "pelt_change_point_tolerance_days"),
+                    "PELT_CHANGE_POINT_TOLERANCE_DAYS",
+                    "1",
+                    int,
+                ),
+                "pelt_min_effect_size": _resolve_user_or_env(
+                    user_inputs,
+                    ("static", "v2", "pelt_min_effect_size"),
+                    "PELT_MIN_EFFECT_SIZE",
+                    "0.0",
+                    float,
+                ),
+            },
+        )
+    else:
+        raise ValueError("STATIC_VERSION must be one of: v1, v2")
+
+    return PipelineConfig(
+        paths=PathConfig(
+            base_path=base_path,
+            data_path=base_path / "data",
+            result_path=result_path,
+            eda_result_path=eda_result_path,
+        ),
+        switches=switches,
+        data_name=_resolve_user_or_env(user_inputs, ("data", "data_name"), "DATA_NAME", "사출성형기", str),
+        data_names_raw=_resolve_user_or_env(
+            user_inputs,
+            ("data", "data_names"),
+            "DATA_NAMES",
+            _resolve_user_or_env(user_inputs, ("data", "data_name"), "DATA_NAME", "사출성형기", str),
+            str,
+        ),
+        experiment_name=_resolve_user_or_env(user_inputs, ("data", "experiment_name"), "EXPERIMENT_NAME", "", str).strip(),
+        experiment_prefix=_resolve_user_or_env(
+            user_inputs,
+            ("data", "experiment_prefix"),
+            "EXPERIMENT_PREFIX",
+            "model-weighting-comparison",
+            str,
+        ).strip(),
+        feature_importance_params={
+            "feature_importance_f1_threshold": _resolve_user_or_env(
+                user_inputs, ("feature_importance", "f1_threshold"), "FEATURE_IMPORTANCE_F1_THRESHOLD", "0.0", float
+            ),
+            "feature_importance_runs": _resolve_user_or_env(
+                user_inputs, ("feature_importance", "runs"), "FEATURE_IMPORTANCE_RUNS", "30", int
+            ),
+            "feature_importance_top_k": _resolve_user_or_env(
+                user_inputs, ("feature_importance", "top_k"), "FEATURE_IMPORTANCE_TOP_K", "10", int
+            ),
+        },
+        weight_params={
+            "baseline_index_mul": _resolve_user_or_env(
+                user_inputs, ("weighting", "baseline_index_mul"), "BASELINE_INDEX_MUL", "2", int
+            ),
+            "baseline_date_mul": _resolve_user_or_env(
+                user_inputs, ("weighting", "baseline_date_mul"), "BASELINE_DATE_MUL", "2", int
+            ),
+        },
+        static_analysis=static_analysis,
+    )
+
+
+def resolve_pipeline_data_names(raw_data_names: str, data_name: str, data_path: Path) -> list[str]:
+    available_data_names = get_available_data_names(data_path)
+    selected_data_names = [name.strip() for name in raw_data_names.split(",") if name.strip()]
+    if not selected_data_names:
+        selected_data_names = [data_name]
+
+    if len(selected_data_names) == 1 and selected_data_names[0].lower() == "all":
+        return available_data_names
+
+    invalid_data_names = [
+        selected_name for selected_name in selected_data_names
+        if selected_name not in available_data_names
+    ]
+    if invalid_data_names:
+        available = ", ".join(available_data_names)
+        invalid = ", ".join(invalid_data_names)
+        raise ValueError(f"Unsupported data_name={invalid}. Available: {available}")
+
+    return selected_data_names
+
+
+def build_pipeline_experiment_name(
+    data_name: str,
+    experiment_name: str | None = None,
+    experiment_prefix: str | None = None,
+) -> str:
+    if experiment_name:
+        return experiment_name
+    prefix = (experiment_prefix or "model-weighting-comparison").strip() or "model-weighting-comparison"
+    return f"{prefix}--{data_name}"
+
+
+def build_pipeline_parent_run_params(model_run_config: dict, config: PipelineConfig) -> dict:
+    return {
+        **model_run_config,
+        **config.analysis_params,
+        **config.weight_params,
+    }
+
+
+def build_pipeline_child_run_params(model_run_config: dict, test_config: dict, config: PipelineConfig) -> dict:
+    return {
+        **build_pipeline_parent_run_params(model_run_config, config),
+        **test_config,
+    }
+
+
+def build_pipeline_dataset_tags(data_name: str, df, ng_df, check_cols, date_col: list[str]) -> dict:
+    date_key = date_col[0]
+    return {
+        "data_name": data_name,
+        "dataset_rows": str(len(df)),
+        "dataset_ng_rows": str(len(ng_df)),
+        "dataset_feature_count": str(len(check_cols)),
+        "dataset_target_col": "TAG",
+        "dataset_date_col": date_key,
+        "dataset_date_start": str(df[date_key].min()),
+        "dataset_date_end": str(df[date_key].max()),
+    }
+
+
+def build_pipeline_child_run_tags(weighting: str, dataset_tags: dict) -> dict:
+    run_type = "baseline" if weighting == "baseline" else "weighted"
+    return {
+        **dataset_tags,
+        "stage": "modeling",
+        "run_type": run_type,
+        "comparison_group": "baseline_vs_weighted",
+        "weighting": weighting,
+    }
+
+
+def build_pipeline_weighting_artifacts(weight_diagnostics: dict, weight_df) -> dict[str, object]:
+    artifacts = {
+        "index_weighted_rows": weight_diagnostics["index_weighted_rows"],
+        "date_feature_weighted_rows": weight_diagnostics["date_feature_weighted_rows"],
+        "feature_importance_weights": weight_diagnostics["feature_importance_weights"],
+        "weighting_summary": weight_diagnostics["weighting_summary"],
+        "weighted_data_preview": weight_df.head(100).copy(),
+    }
+    return {
+        name: artifact_df
+        for name, artifact_df in artifacts.items()
+        if artifact_df is not None
+    }
+
+
+def build_pipeline_model_test_configs(model_run_configs: list[dict], config: PipelineConfig) -> list[dict]:
+    model_test_configs = []
+    for model_run_config in model_run_configs:
+        model_test_configs.extend(
+            [
+                {
+                    **model_run_config,
+                    "weighting": "baseline",
+                },
+                {
+                    **model_run_config,
+                    "weighting": "weighted",
+                    "index_mul": config.weight_params["baseline_index_mul"],
+                    "date_mul": config.weight_params["baseline_date_mul"],
+                },
+            ]
+        )
+    return model_test_configs
+
+
+def log_pipeline_comparison_metrics(metrics_by_weighting: dict, mlflow_module) -> None:
+    baseline_metrics = metrics_by_weighting.get("baseline")
+    weighted_metrics = metrics_by_weighting.get("weighted")
+    if baseline_metrics is None or weighted_metrics is None:
+        return
+
+    metric_pairs = {
+        "test_accuracy": "accuracy",
+        "validation_accuracy": "validation_accuracy",
+        "cv_accuracy": "cv_accuracy",
+        "cv_f1score": "cv_f1_score",
+        "cv_precision": "cv_precision",
+        "cv_recall": "cv_recall",
+    }
+
+    for metric_name, source_key in metric_pairs.items():
+        baseline_value = baseline_metrics[source_key]
+        weighted_value = weighted_metrics[source_key]
+        mlflow_module.log_metric(f"baseline_{metric_name}", baseline_value)
+        mlflow_module.log_metric(f"weighted_{metric_name}", weighted_value)
+        mlflow_module.log_metric(f"delta_{metric_name}", weighted_value - baseline_value)
+
+
+def log_pipeline_run_configuration(
+    config: PipelineConfig,
+    selected_data_names: list[str],
+    selected_model_names: list[str],
+) -> None:
+    if config.switches.run_modeling and not config.switches.run_analysis:
+        print("RUN_MODELING=1 이므로 모델링에 필요한 분석 단계도 함께 실행합니다.")
+    if config.switches.run_eda and not config.switches.run_analysis:
+        print("RUN_EDA=1 이므로 EDA 시각화에 필요한 분석 단계도 함께 실행합니다.")
+
+    print("Run config:")
+    print(
+        f"DATA_NAMES={selected_data_names}, "
+        f"RUN_DATA_LOADER={config.switches.run_data_loader}, "
+        f"RUN_EDA={config.switches.run_eda}, "
+        f"RUN_ANALYSIS={config.switches.run_analysis}, "
+        f"RUN_MODELING={config.switches.run_modeling}"
+    )
+    print(f"MODEL_NAMES={selected_model_names}")
+    print(
+        f"STATIC_VERSION={config.static_analysis.version}, "
+        f"FEATURE_IMPORTANCE_F1_THRESHOLD={config.feature_importance_params['feature_importance_f1_threshold']}, "
+        f"FEATURE_IMPORTANCE_RUNS={config.feature_importance_params['feature_importance_runs']}, "
+        f"FEATURE_IMPORTANCE_TOP_K={config.feature_importance_params['feature_importance_top_k']}"
+    )
+
+    params = config.static_analysis.params
+    if config.static_analysis.version == "v1":
+        print(
+            f"IQR_DIRECTIONAL_CORR_THRESHOLD={params['iqr_directional_corr_threshold']}, "
+            f"ANCHOR_CONTEXT_DAYS={params['anchor_context_days']}, "
+            f"ANCHOR_MIN_WINDOW_POINTS={params['anchor_min_window_points']}, "
+            f"ANCHOR_MIN_RATE_QUANTILE={params['anchor_min_rate_quantile']}, "
+            f"ANCHOR_MIN_LEVEL_SCORE={params['anchor_min_level_score']}, "
+            f"ANCHOR_MIN_SIGN_AGREEMENT={params['anchor_min_sign_agreement']}"
+        )
+    else:
+        print(
+            f"P_CHART_SIGMA_LEVEL={params['p_chart_sigma_level']}, "
+            f"P_CHART_MIN_SUBGROUP_SIZE={params['p_chart_min_subgroup_size']}, "
+            f"PELT_PENALTY_SCALE={params['pelt_penalty_scale']}, "
+            f"PELT_MIN_SEGMENT_SIZE={params['pelt_min_segment_size']}, "
+            f"PELT_CHANGE_POINT_TOLERANCE_DAYS={params['pelt_change_point_tolerance_days']}, "
+            f"PELT_MIN_EFFECT_SIZE={params['pelt_min_effect_size']}"
+        )
+
+    if config.switches.run_modeling:
+        print(f"BASELINE_INDEX_MUL={config.weight_params['baseline_index_mul']}")
+        print(f"BASELINE_DATE_MUL={config.weight_params['baseline_date_mul']}")
+
+
+def run_pipeline_statistical_analysis(df, target_col: str, check_cols: list[str], config: PipelineConfig) -> dict:
+    feature_importance_result = None
+    try:
+        from utils.func_feat_imp import xgboost_feature_importance
+
+        print(
+            "Feature importance config: "
+            f"f1_threshold={config.feature_importance_params['feature_importance_f1_threshold']}, "
+            f"runs={config.feature_importance_params['feature_importance_runs']}, "
+            f"top_k={config.feature_importance_params['feature_importance_top_k']}"
+        )
+        feature_importance_result = xgboost_feature_importance(
+            full_df=df,
+            target_col=[target_col],
+            check_cols=check_cols,
+            f1_threshold=config.feature_importance_params["feature_importance_f1_threshold"],
+            n_runs=config.feature_importance_params["feature_importance_runs"],
+            top_k=config.feature_importance_params["feature_importance_top_k"],
+        )
+    except ModuleNotFoundError as exc:
+        print(f"Feature importance skipped: {exc}")
+
+    params = config.static_analysis.params
+    if config.static_analysis.version == "v1":
+        print(
+            "IQR config: "
+            f"directional_corr_threshold={params['iqr_directional_corr_threshold']}"
+        )
+        print(
+            "Anchor window config: "
+            f"context_days={params['anchor_context_days']}, "
+            f"min_window_points={params['anchor_min_window_points']}, "
+            f"min_rate_quantile={params['anchor_min_rate_quantile']}, "
+            f"min_level_score={params['anchor_min_level_score']}, "
+            f"min_sign_agreement={params['anchor_min_sign_agreement']}"
+        )
+        static_idx_result, static_idx_detail_result = config.static_analysis.index_fn(
+            df,
+            target_col,
+            check_cols,
+            directional_corr_threshold=params["iqr_directional_corr_threshold"],
+            return_details=True,
+        )
+        static_date_result = config.static_analysis.date_fn(
+            df,
+            check_cols,
+            target_col,
+            context_days=params["anchor_context_days"],
+            min_window_points=params["anchor_min_window_points"],
+            min_anchor_rate_quantile=params["anchor_min_rate_quantile"],
+            min_level_score=params["anchor_min_level_score"],
+            min_sign_agreement=params["anchor_min_sign_agreement"],
+        )
+    else:
+        print(
+            "Global scatter config: "
+            f"sigma_level={params['p_chart_sigma_level']}, "
+            f"min_outlier_features={params['p_chart_min_subgroup_size']}"
+        )
+        print(
+            "PELT date trend config: "
+            f"penalty_scale={params['pelt_penalty_scale']}, "
+            f"min_segment_size={params['pelt_min_segment_size']}, "
+            f"change_point_tolerance_days={params['pelt_change_point_tolerance_days']}, "
+            f"min_effect_size={params['pelt_min_effect_size']}"
+        )
+        static_idx_result, static_idx_detail_result = config.static_analysis.index_fn(
+            df,
+            target_col,
+            check_cols=check_cols,
+            sigma_level=params["p_chart_sigma_level"],
+            min_outlier_features=params["p_chart_min_subgroup_size"],
+            return_details=True,
+        )
+        static_date_result = config.static_analysis.date_fn(
+            df,
+            check_cols,
+            target_col,
+            penalty_scale=params["pelt_penalty_scale"],
+            min_segment_size=params["pelt_min_segment_size"],
+            change_point_tolerance_days=params["pelt_change_point_tolerance_days"],
+            min_effect_size=params["pelt_min_effect_size"],
+        )
+
+    return {
+        "feature_importance_result": feature_importance_result,
+        "static_idx_result": static_idx_result,
+        "static_idx_detail_result": static_idx_detail_result,
+        "static_date_result": static_date_result,
+    }

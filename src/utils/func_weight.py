@@ -16,18 +16,44 @@ def get_weighted_df(
     diagnostics = {}
     idx_weight_cols = list(check_cols)
     print("Index 가중치는 feature importance와 무관하게 전체 check_cols에 적용합니다.")
-    
+
+    static_idx_result = (
+        static_idx_result.copy()
+        if static_idx_result is not None
+        else pd.DataFrame(columns=df.columns)
+    )
+    static_date_result = (
+        static_date_result.copy()
+        if static_date_result is not None
+        else pd.DataFrame(columns=["DATE", "FEATURE"])
+    )
+
     # 가중치 (통계 분석 기반)
     weight_base_df = df.copy()
+    weight_base_df["INDEX"] = weight_base_df.index
 
     ## index별 가중치
-    static_idx_result["flag_static_idx"] = 1
-
-    weight_base_df = weight_base_df.merge(
-        static_idx_result,
-        on=weight_base_df.columns.tolist(),
-        how="left"
-    )
+    if not static_idx_result.empty:
+        if "INDEX" in static_idx_result.columns:
+            static_idx_flags = (
+                static_idx_result[["INDEX"]]
+                .drop_duplicates()
+                .assign(flag_static_idx=1)
+            )
+            weight_base_df = weight_base_df.merge(
+                static_idx_flags,
+                on="INDEX",
+                how="left"
+            )
+        else:
+            static_idx_result["flag_static_idx"] = 1
+            weight_base_df = weight_base_df.merge(
+                static_idx_result,
+                on=df.columns.tolist(),
+                how="left"
+            )
+    else:
+        weight_base_df["flag_static_idx"] = pd.NA
 
     if idx_weight_cols:
         weight_base_df.loc[weight_base_df["flag_static_idx"] == 1, idx_weight_cols] *= index_mul
@@ -36,10 +62,11 @@ def get_weighted_df(
     diagnostics["index_weighted_features"] = pd.DataFrame({"FEATURE": idx_weight_cols})
 
     ## 날짜별 가중치
-    weight_base_df["INDEX"] = weight_base_df.index
     temp_weight_df = weight_base_df.melt(id_vars=["INDEX", "DATE"], var_name="FEATURE", value_name="VALUE")
 
-    static_list = [("flag_static_date", static_date_result)]
+    static_list = []
+    if not static_date_result.empty and {"DATE", "FEATURE"}.issubset(static_date_result.columns):
+        static_list.append(("flag_static_date", static_date_result))
 
     for flag_name, static_df in static_list:
         temp_weight_df = temp_weight_df.merge(
@@ -50,17 +77,23 @@ def get_weighted_df(
 
     flag_cols = [name for name, _ in static_list]
 
-    multiplier = (
-        temp_weight_df[flag_cols]
-        .fillna(0)
-        .replace({0: 1, 1: date_mul})
-        .prod(axis=1)
-    )
+    if flag_cols:
+        multiplier = (
+            temp_weight_df[flag_cols]
+            .fillna(0)
+            .replace({0: 1, 1: date_mul})
+            .prod(axis=1)
+        )
+    else:
+        multiplier = 1
 
     temp_weight_df["VALUE"] *= multiplier
-    diagnostics["date_feature_weighted_rows"] = temp_weight_df[
-        temp_weight_df[flag_cols].fillna(0).any(axis=1)
-    ].copy()
+    if flag_cols:
+        diagnostics["date_feature_weighted_rows"] = temp_weight_df[
+            temp_weight_df[flag_cols].fillna(0).any(axis=1)
+        ].copy()
+    else:
+        diagnostics["date_feature_weighted_rows"] = pd.DataFrame(columns=temp_weight_df.columns)
 
     weight_df = (
         temp_weight_df[["INDEX", "DATE", "FEATURE", "VALUE"]]
