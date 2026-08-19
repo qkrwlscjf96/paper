@@ -24,6 +24,7 @@
 - `data/`: 원본 실험 데이터셋
 - `result/eda/`: EDA 결과물 저장 경로
 - `result/mlflow/`: MLflow DB 및 artifact 저장 경로
+- `tests/`: 데이터 로딩 및 모델 전처리 단위 테스트
 
 ## 요구 사항
 
@@ -56,6 +57,14 @@ python3 -m src.main
 - `weighting.baseline_index_mul`, `weighting.baseline_date_mul`: baseline 대비 가중치 배수
 
 현재 기본 설정상 `run_modeling`은 `False`이므로, 로컬 실행만 하면 주로 데이터 로드, 분석, EDA 중심으로 동작합니다.
+
+모델링 시 MLP와 Logistic Regression에만 `StandardScaler`를 적용합니다. 트리 계열 모델은 원본 스케일을 사용하며, feature importance 가중치는 필요한 표준화가 끝난 뒤 적용합니다. 모델 평가는 train 데이터 내부 5-fold 교차검증과 별도 test split으로 수행하고, 최종 모델은 전체 train split으로 학습합니다.
+
+단위 테스트 실행:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
 
 ## Docker 실행
 

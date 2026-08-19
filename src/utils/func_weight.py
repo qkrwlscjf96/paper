@@ -114,23 +114,13 @@ def get_weighted_df(
         return weight_df
 
     feature_importance_result = feature_importance_result.copy()
-    feature_importance_result["WEIGHT"] = 1 + (
-        feature_importance_result["importance"] / feature_importance_result["importance"].sum()
-    )
-
-    weight_map = dict(
-        zip(
-            feature_importance_result["FEATURE"],
-            feature_importance_result["WEIGHT"]
+    importance_sum = feature_importance_result["importance"].sum()
+    if not pd.notna(importance_sum) or importance_sum <= 0:
+        feature_importance_result["WEIGHT"] = 1.0
+    else:
+        feature_importance_result["WEIGHT"] = 1 + (
+            feature_importance_result["importance"] / importance_sum
         )
-    )
-
-    common_cols = df.columns.intersection(weight_map.keys())
-
-    weight_df[common_cols] = (
-        weight_df[common_cols]
-        .mul(pd.Series(weight_map), axis=1)
-    )
 
     diagnostics["feature_importance_weights"] = feature_importance_result.copy()
     diagnostics["weighting_summary"] = pd.DataFrame(
@@ -144,7 +134,7 @@ def get_weighted_df(
         ]
     )
     
-    print("가중치 적용된 df 생성 완료")
+    print("통계 기반 가중치 df 생성 완료 (feature importance 가중치는 모델 전처리 후 적용)")
     if return_diagnostics:
         return weight_df, diagnostics
     return weight_df

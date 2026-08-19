@@ -221,6 +221,14 @@ def run_modeling(
                 artifact_dataframes = None
                 if weighting == "weighted":
                     artifact_dataframes = build_pipeline_weighting_artifacts(weight_diagnostics, weight_df)
+                feature_weights = None
+                if weighting == "weighted" and not weight_diagnostics["feature_importance_weights"].empty:
+                    feature_weights = dict(
+                        zip(
+                            weight_diagnostics["feature_importance_weights"]["FEATURE"],
+                            weight_diagnostics["feature_importance_weights"]["WEIGHT"],
+                        )
+                    )
 
                 print("\n")
                 message = f"{model_name} / {weighting} 모델 학습결과: data_name={data_name}"
@@ -249,6 +257,7 @@ def run_modeling(
                         "model_name": model_name,
                     },
                     artifact_dataframes=artifact_dataframes,
+                    feature_weights=feature_weights,
                     nested=True,
                 )
                 metrics_by_weighting[weighting] = metrics

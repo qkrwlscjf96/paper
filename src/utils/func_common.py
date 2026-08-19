@@ -57,14 +57,38 @@ def load_data_df(data_name: str, data_path: str | os.PathLike):
     return : df, ng_df, target_col, check_cols
     """
 
-    DATA_PATH = Path(data_path)
-    file_paths = os.listdir(DATA_PATH)
+    data_dir = Path(data_path)
+    if not data_dir.is_dir():
+        raise FileNotFoundError(f"Data directory does not exist: {data_dir}")
 
-    # 파일 찾기
-    pick_file = [f for f in file_paths if data_name in f][0]
-    FILE_PATH = DATA_PATH / pick_file
+    supported_suffixes = {".csv", ".xlsx", ".xls"}
+    matches = sorted(
+        path
+        for path in data_dir.iterdir()
+        if path.is_file()
+        and path.suffix.lower() in supported_suffixes
+        and path.stem == data_name
+    )
+    if not matches:
+        available = ", ".join(get_available_data_names(data_dir)) or "(none)"
+        raise FileNotFoundError(
+            f"Dataset '{data_name}' was not found in {data_dir}. Available: {available}"
+        )
+    if len(matches) > 1:
+        matched_names = ", ".join(path.name for path in matches)
+        raise ValueError(
+            f"Dataset '{data_name}' is ambiguous. Matching files: {matched_names}"
+        )
+    file_path = matches[0]
 
-    df = get_reader(FILE_PATH).read()
+    df = get_reader(str(file_path)).read()
+
+    required_columns = {"DATE", "TAG"}
+    missing_columns = sorted(required_columns.difference(df.columns))
+    if missing_columns:
+        raise ValueError(
+            f"Dataset '{data_name}' is missing required columns: {', '.join(missing_columns)}"
+        )
 
     # 날짜 컬럼 처리 (STD_DT 예외 처리)
     if data_name != "소성가공":
@@ -76,6 +100,12 @@ def load_data_df(data_name: str, data_path: str | os.PathLike):
     target_col = ["TAG"]
     date_col = ["DATE"]
     check_cols = [x for x in df.columns if x not in target_col + date_col]
+    non_numeric_cols = [col for col in check_cols if not pd.api.types.is_numeric_dtype(df[col])]
+    if non_numeric_cols:
+        raise ValueError(
+            "All feature columns must be numeric. Non-numeric columns: "
+            + ", ".join(non_numeric_cols)
+        )
 
     # TAG → 1/0 변환
     df[target_col[0]] = (df[target_col[0]] == "NG").astype(int)
@@ -479,7 +509,6 @@ def log_pipeline_comparison_metrics(metrics_by_weighting: dict, mlflow_module) -
 
     metric_pairs = {
         "test_accuracy": "accuracy",
-        "validation_accuracy": "validation_accuracy",
         "cv_accuracy": "cv_accuracy",
         "cv_f1score": "cv_f1_score",
         "cv_precision": "cv_precision",

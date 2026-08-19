@@ -19,6 +19,9 @@ from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler
 
 
+SCALE_REQUIRED_MODELS = {"MLPClassifier", "LogisticRegression"}
+
+
 def _validate_unit_interval(metric_name: str, value: float) -> float:
     if not np.isfinite(value):
         raise ValueError(f"{metric_name} must be finite, got {value}")
@@ -183,12 +186,36 @@ def _get_metric_average(y_true):
     return "binary" if y_true.nunique() == 2 else "weighted"
 
 
+def _prepare_features(
+    X_train,
+    X_other,
+    model_name: str,
+    check_cols: list[str],
+    feature_weights: dict[str, float] | None = None,
+):
+    """Fit preprocessing on train only and apply feature weights afterwards."""
+    if model_name in SCALE_REQUIRED_MODELS:
+        scaler = StandardScaler()
+        train_values = scaler.fit_transform(X_train)
+        other_values = scaler.transform(X_other)
+    else:
+        train_values = X_train.to_numpy(copy=True)
+        other_values = X_other.to_numpy(copy=True)
+
+    weights = np.array(
+        [(feature_weights or {}).get(column, 1.0) for column in check_cols],
+        dtype=float,
+    )
+    return train_values * weights, other_values * weights
+
+
 def model_training(
     df,
     check_cols,
     target_col,
     model_name: str = "MLPClassifier",
     model_config: dict | None = None,
+    feature_weights: dict[str, float] | None = None,
 ):
     # Feature / Target 분리
     X = df[check_cols]
@@ -204,17 +231,8 @@ def model_training(
         stratify=y,
     )
 
-    # 2차 분리: train 내부를 6:1로 train/validation 분리
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_train_full,
-        y_train_full,
-        test_size=1 / 7,
-        shuffle=True,
-        random_state=42,
-        stratify=y_train_full,
-    )
-
-    print(f"Train size: {len(X_train)}, Validation size: {len(X_val)}, Test size: {len(X_test)}")
+    X_train, y_train = X_train_full, y_train_full
+    print(f"Train size: {len(X_train)}, Test size: {len(X_test)}")
 
     # Train 데이터에 대해서만 Stratified K-Fold 적용
     kfold = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
@@ -230,9 +248,9 @@ def model_training(
         y_fold_train = y_train.iloc[train_idx]
         y_fold_valid = y_train.iloc[valid_idx]
 
-        scaler = StandardScaler()
-        X_fold_train_scaled = scaler.fit_transform(X_fold_train)
-        X_fold_valid_scaled = scaler.transform(X_fold_valid)
+        X_fold_train_scaled, X_fold_valid_scaled = _prepare_features(
+            X_fold_train, X_fold_valid, model_name, check_cols, feature_weights
+        )
 
         model = clone(_build_model(model_name, model_config))
         model.fit(X_fold_train_scaled, y_fold_train)
@@ -272,22 +290,15 @@ def model_training(
     print(f"K-Fold Recall Mean: {np.mean(cv_recalls):.4f}")
 
     # 최종 모델 학습
-    final_scaler = StandardScaler()
-    X_train_scaled = final_scaler.fit_transform(X_train)
-    X_val_scaled = final_scaler.transform(X_val)
-    X_test_scaled = final_scaler.transform(X_test)
+    X_train_scaled, X_test_scaled = _prepare_features(
+        X_train, X_test, model_name, check_cols, feature_weights
+    )
 
     final_model = _build_model(model_name, model_config)
     final_model.fit(X_train_scaled, y_train)
 
-    # Validation / Test 예측
-    y_val_pred = final_model.predict(X_val_scaled)
+    # Test 예측
     y_test_pred = final_model.predict(X_test_scaled)
-
-    validation_accuracy = _validate_unit_interval(
-        f"{model_name}.validation_accuracy",
-        accuracy_score(y_val, y_val_pred),
-    )
     test_accuracy = _validate_unit_interval(
         f"{model_name}.test_accuracy",
         accuracy_score(y_test, y_test_pred),
@@ -296,7 +307,6 @@ def model_training(
     report_dict = classification_report(y_test, y_test_pred, output_dict=True)
     report_text = classification_report(y_test, y_test_pred)
 
-    print("Validation Accuracy:", validation_accuracy)
     print("Test Accuracy:", test_accuracy)
     print(confusion)
     print(report_text)
@@ -308,7 +318,6 @@ def model_training(
 
     return {
         "accuracy": float(test_accuracy),
-        "validation_accuracy": float(validation_accuracy),
         "cv_accuracy": cv_accuracy,
         "cv_f1_score": cv_f1_score_mean,
         "cv_precision": cv_precision_mean,
@@ -321,5 +330,6 @@ def model_training(
         "classification_report": report_dict,
         "classification_report_text": report_text,
         "model_name": model_name,
+        "scaling_applied": model_name in SCALE_REQUIRED_MODELS,
         "model_params": json.loads(json.dumps(final_model.get_params(), default=str)),
     }

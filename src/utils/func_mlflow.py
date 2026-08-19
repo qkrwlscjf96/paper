@@ -136,6 +136,7 @@ def run_and_log_model(
     params: dict,
     tags: dict,
     artifact_dataframes: dict[str, pd.DataFrame] | None = None,
+    feature_weights: dict[str, float] | None = None,
     nested: bool = False,
 ) -> dict:
     with mlflow.start_run(run_name=run_name, nested=nested):
@@ -155,9 +156,9 @@ def run_and_log_model(
             target_col,
             model_name=model_name,
             model_config=model_params,
+            feature_weights=feature_weights,
         )
         mlflow.log_metric("test_accuracy", metrics["accuracy"])
-        mlflow.log_metric("validation_accuracy", metrics["validation_accuracy"])
         mlflow.log_metric("cv_accuracy", metrics["cv_accuracy"])
         mlflow.log_metric("cv_f1score", metrics["cv_f1_score"])
         mlflow.log_metric("cv_precision", metrics["cv_precision"])
