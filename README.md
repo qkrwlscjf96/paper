@@ -24,6 +24,7 @@
 - `data/`: 원본 실험 데이터셋
 - `result/eda/`: EDA 결과물 저장 경로
 - `result/mlflow/`: MLflow DB 및 artifact 저장 경로
+- `result/logs/`: 실행별 타임스탬프·경과 시간이 포함된 콘솔 로그 저장 경로
 
 ## 요구 사항
 
@@ -290,7 +291,7 @@ docker run --rm \
 
 - EDA 결과물: `result/eda/<version>/<data_name>/`
 - MLflow DB: `result/mlflow/mlflow.db`
-- MLflow artifact: `result/mlflow/artifacts/`
+- MLflow artifact: `result/mlflow/artifacts/<dataset 이름>/`
 
 실험 이름은 기본적으로 `{EXPERIMENT_PREFIX}--{DATA_NAME}` 형식으로 생성됩니다.  
 MLflow run은 `{MODEL_NAME}` 형식으로 모델마다 하나씩 기록됩니다. 각 run의 Metrics 탭에는 `baseline_cv_auc`, `baseline_cv_f1score`, `baseline_cv_precision`, `baseline_cv_recall`, `baseline_cv_accuracy`와 이에 대응하는 `weighted_cv_*` 지표가 함께 표시됩니다. baseline/weighted 구분은 parameter가 아니라 metric 이름에 포함됩니다.

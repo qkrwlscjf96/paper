@@ -1,8 +1,12 @@
 #%%
 import sys
-from contextlib import redirect_stdout
+import traceback
+from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime
 from io import StringIO
 from pathlib import Path
+from time import perf_counter
+from typing import TextIO
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
@@ -28,6 +32,38 @@ from utils.func_weight import build_statistical_sample_weights
 
 
 BASE_PATH = Path(__file__).resolve().parent.parent
+
+
+class TimestampedTee:
+    """Prefix output with wall/elapsed time and write it to multiple streams."""
+
+    def __init__(self, *streams: TextIO):
+        self.streams = streams
+        self.started_at = perf_counter()
+        self.at_line_start = True
+
+    def _prefix(self) -> str:
+        timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S%z")
+        elapsed = perf_counter() - self.started_at
+        return f"[{timestamp}] [+{elapsed:,.3f}s] "
+
+    def write(self, message: str) -> int:
+        if not message:
+            return 0
+
+        for chunk in message.splitlines(keepends=True):
+            rendered = f"{self._prefix() if self.at_line_start else ''}{chunk}"
+            for stream in self.streams:
+                stream.write(rendered)
+            self.at_line_start = chunk.endswith(("\n", "\r"))
+        return len(message)
+
+    def flush(self) -> None:
+        for stream in self.streams:
+            stream.flush()
+
+    def isatty(self) -> bool:
+        return any(getattr(stream, "isatty", lambda: False)() for stream in self.streams)
 
 # =============================================================================
 # User Inputs
@@ -192,9 +228,11 @@ def configure_tracking(data_name: str) -> None:
     mlflow_config = configure_mlflow(
         base_path=CONFIG.paths.base_path,
         experiment_name=experiment_name,
+        dataset_name=data_name,
     )
     print(f"[MLFLOW] Tracking URI: {mlflow_config['tracking_uri']}")
     print(f"[MLFLOW] Experiment: {mlflow_config['resolved_experiment_name']}")
+    print(f"[MLFLOW] Artifact URI: {mlflow_config['dataset_artifact_uri']}")
 
 
 def run_cv_comparison(
@@ -273,10 +311,30 @@ def run_dataset(data_name: str) -> None:
         run_cv_comparison(data_name, df, ng_df, target_col, check_cols, date_col)
 
 
-def main() -> None:
+def run() -> None:
     log_pipeline_run_configuration(CONFIG, SELECTED_DATA_NAMES, SELECTED_MODEL_NAMES)
     for data_name in SELECTED_DATA_NAMES:
         run_dataset(data_name)
+
+
+def main() -> None:
+    log_dir = CONFIG.paths.result_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    run_id = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S_%z")
+    log_path = log_dir / f"pipeline_{run_id}.log"
+
+    with log_path.open("w", encoding="utf-8", buffering=1) as log_file:
+        output = TimestampedTee(sys.stdout, log_file)
+        with redirect_stdout(output), redirect_stderr(output):
+            print(f"[LOG] File: {log_path}")
+            try:
+                run()
+            except Exception:
+                print("[PIPELINE] Failed; traceback follows")
+                traceback.print_exc()
+                raise
+            finally:
+                print("[LOG] Run finished")
 
 
 if __name__ == "__main__":

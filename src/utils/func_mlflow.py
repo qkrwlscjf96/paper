@@ -1,7 +1,7 @@
 import os
 import tempfile
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import mlflow
 import pandas as pd
@@ -52,12 +52,23 @@ def _uses_mlflow_artifact_proxy(experiment) -> bool:
     return artifact_location.startswith("mlflow-artifacts:/")
 
 
-def configure_mlflow(base_path: Path, experiment_name: str) -> dict:
+def _dataset_artifact_uri(artifact_root_uri: str, dataset_name: str) -> str:
+    dataset_path = quote(dataset_name.strip(), safe="-_.~")
+    return f"{artifact_root_uri.rstrip('/')}/{dataset_path}"
+
+
+def _same_artifact_location(experiment, artifact_uri: str) -> bool:
+    current_location = (getattr(experiment, "artifact_location", "") or "").rstrip("/")
+    return current_location == artifact_uri.rstrip("/")
+
+
+def configure_mlflow(base_path: Path, experiment_name: str, dataset_name: str) -> dict:
     config = get_mlflow_config(base_path)
     TRACKING_DIR = config["tracking_dir"]
     ARTIFACT_DIR = config["artifact_dir"]
     TRACKING_URI = config["tracking_uri"]
     ARTIFACT_URI = config["artifact_uri"]
+    DATASET_ARTIFACT_URI = _dataset_artifact_uri(ARTIFACT_URI, dataset_name)
 
     TRACKING_DIR.mkdir(parents=True, exist_ok=True)
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
@@ -70,24 +81,35 @@ def configure_mlflow(base_path: Path, experiment_name: str) -> dict:
 
     resolved_experiment_name = experiment_name
 
-    if (
-        experiment is not None
-        and not _is_remote_tracking_uri(TRACKING_URI)
-        and _uses_mlflow_artifact_proxy(experiment)
+    if experiment is not None and not _is_remote_tracking_uri(TRACKING_URI) and (
+        _uses_mlflow_artifact_proxy(experiment)
+        or not _same_artifact_location(experiment, DATASET_ARTIFACT_URI)
     ):
-        resolved_experiment_name = f"{experiment_name}--local-artifacts"
+        resolved_experiment_name = f"{experiment_name}--dataset-artifacts"
         experiment = _get_experiment_any_state(client, resolved_experiment_name)
         experiment = _restore_if_deleted(client, experiment)
+
+        if experiment is not None and not _same_artifact_location(
+            experiment, DATASET_ARTIFACT_URI
+        ):
+            raise ValueError(
+                f"MLflow experiment '{resolved_experiment_name}' already uses a different "
+                f"artifact location: {experiment.artifact_location}"
+            )
 
     if experiment is None:
         if _is_remote_tracking_uri(TRACKING_URI):
             # Let the remote tracking server apply its own default artifact root.
             client.create_experiment(resolved_experiment_name)
         else:
-            client.create_experiment(resolved_experiment_name, artifact_location=ARTIFACT_URI)
+            client.create_experiment(
+                resolved_experiment_name,
+                artifact_location=DATASET_ARTIFACT_URI,
+            )
 
     mlflow.set_experiment(resolved_experiment_name)
     config["resolved_experiment_name"] = resolved_experiment_name
+    config["dataset_artifact_uri"] = DATASET_ARTIFACT_URI
     return config
 
 
