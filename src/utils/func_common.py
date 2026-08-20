@@ -1,5 +1,4 @@
 import os
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -13,43 +12,12 @@ from .func_static import (
     pelt_cpd_date_trend,
 )
 
-"""파일 읽기 (CSV, Excel)"""
-# 1추상 클래스 (공통 인터페이스)
-class FileReader(ABC):
-    def __init__(self, filepath: str):
-        self.filepath = filepath
+def _read_dataframe(file_path: Path) -> pd.DataFrame:
+    print(f"[DATA] Reading {file_path.suffix.upper().lstrip('.')}: {file_path}")
+    if file_path.suffix.lower() == ".csv":
+        return pd.read_csv(file_path).reset_index(drop=True)
+    return pd.read_excel(file_path).reset_index(drop=True)
 
-    @abstractmethod
-    def read(self) -> pd.DataFrame:
-        pass
-
-
-# CSV 전용 클래스
-class CSVReader(FileReader):
-    def read(self) -> pd.DataFrame:
-        print(f"[DATA] Reading CSV: {self.filepath}")
-        return pd.read_csv(self.filepath).reset_index(drop=True)
-
-
-# Excel 전용 클래스
-class ExcelReader(FileReader):
-    def read(self) -> pd.DataFrame:
-        print(f"[DATA] Reading Excel: {self.filepath}")
-        return pd.read_excel(self.filepath).reset_index(drop=True)
-
-
-# Factory 함수 (확장자 기반 객체 생성)
-def get_reader(filepath: str) -> FileReader:
-    ext = os.path.splitext(filepath)[1].lower()
-
-    if ext == ".csv":
-        return CSVReader(filepath)
-    elif ext in [".xlsx", ".xls"]:
-        return ExcelReader(filepath)
-    else:
-        raise ValueError(f"Unsupported file type: {ext}")
-
-"""실제 파일 읽기"""
 
 def load_data_df(data_name: str, data_path: str | os.PathLike):
     """
@@ -81,7 +49,7 @@ def load_data_df(data_name: str, data_path: str | os.PathLike):
         )
     file_path = matches[0]
 
-    df = get_reader(str(file_path)).read()
+    df = _read_dataframe(file_path)
 
     required_columns = {"DATE", "TAG"}
     missing_columns = sorted(required_columns.difference(df.columns))
@@ -412,21 +380,6 @@ def build_pipeline_experiment_name(
     return f"{prefix}--{data_name}"
 
 
-def build_pipeline_parent_run_params(model_run_config: dict, config: PipelineConfig) -> dict:
-    return {
-        **model_run_config,
-        **config.analysis_params,
-        **config.weight_params,
-    }
-
-
-def build_pipeline_child_run_params(model_run_config: dict, test_config: dict, config: PipelineConfig) -> dict:
-    return {
-        **build_pipeline_parent_run_params(model_run_config, config),
-        **test_config,
-    }
-
-
 def build_pipeline_dataset_tags(data_name: str, df, ng_df, check_cols, date_col: list[str]) -> dict:
     date_key = date_col[0]
     return {
@@ -439,36 +392,6 @@ def build_pipeline_dataset_tags(data_name: str, df, ng_df, check_cols, date_col:
         "dataset_date_start": str(df[date_key].min()),
         "dataset_date_end": str(df[date_key].max()),
     }
-
-
-def build_pipeline_child_run_tags(weighting: str, dataset_tags: dict) -> dict:
-    run_type = "baseline" if weighting == "baseline" else "weighted"
-    return {
-        **dataset_tags,
-        "stage": "modeling",
-        "run_type": run_type,
-        "comparison_group": "baseline_vs_weighted",
-        "weighting": weighting,
-    }
-
-
-def build_pipeline_model_test_configs(model_run_configs: list[dict], config: PipelineConfig) -> list[dict]:
-    model_test_configs = []
-    for model_run_config in model_run_configs:
-        model_test_configs.extend(
-            [
-                {
-                    **model_run_config,
-                    "weighting": "baseline",
-                },
-                {
-                    **model_run_config,
-                    "weighting": "weighted",
-                    "sample_weight_mul": config.weight_params["sample_weight_mul"],
-                },
-            ]
-        )
-    return model_test_configs
 
 
 def log_pipeline_run_configuration(

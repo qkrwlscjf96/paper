@@ -113,34 +113,6 @@ def configure_mlflow(base_path: Path, experiment_name: str, dataset_name: str) -
     return config
 
 
-def _sanitize_name_part(value) -> str:
-    return (
-        str(value)
-        .replace(" ", "")
-        .replace("(", "")
-        .replace(")", "")
-        .replace(",", "x")
-        .replace("[", "")
-        .replace("]", "")
-    )
-
-
-def _format_param_value(value) -> str:
-    if isinstance(value, (list, tuple)):
-        return ",".join(map(str, value))
-    return str(value)
-
-
-def make_name_from_params(prefix: str, params: dict, include_keys: list[str]) -> str:
-    parts = [prefix]
-    for key in include_keys:
-        if key not in params:
-            continue
-        value = _sanitize_name_part(_format_param_value(params[key]))
-        parts.append(f"{key}={value}")
-    return "--".join(parts)
-
-
 def log_dataframe_artifact(df: pd.DataFrame, artifact_path: str, filename: str) -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         output_path = Path(temp_dir) / filename
