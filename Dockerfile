@@ -1,5 +1,5 @@
 # 베이스 이미지
-FROM python:3.11.5-slim
+FROM python:3.12-slim
 
 # 컨테이너 런타임 환경
 ENV PYTHONDONTWRITEBYTECODE=1 \

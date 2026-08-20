@@ -8,7 +8,7 @@ import pandas as pd
 from mlflow import MlflowClient
 from mlflow.entities import ViewType
 
-from .func_model import model_training
+from .func_model import cross_validate_model
 
 
 def get_mlflow_config(base_path: Path) -> dict:
@@ -126,17 +126,15 @@ def log_dataframe_artifact(df: pd.DataFrame, artifact_path: str, filename: str) 
         mlflow.log_artifact(str(output_path), artifact_path=artifact_path)
 
 
-def run_and_log_model(
+def run_and_log_cv_model(
     run_name: str,
-    df_to_train: pd.DataFrame,
-    check_cols: list[str],
+    cv_folds_by_weighting: dict[str, list[dict]],
     target_col: list[str],
     model_name: str,
     model_params: dict,
     params: dict,
     tags: dict,
     artifact_dataframes: dict[str, pd.DataFrame] | None = None,
-    feature_weights: dict[str, float] | None = None,
     nested: bool = False,
 ) -> dict:
     with mlflow.start_run(run_name=run_name, nested=nested):
@@ -150,17 +148,23 @@ def run_and_log_model(
                     filename=f"{artifact_name}.csv",
                 )
 
-        metrics = model_training(
-            df_to_train,
-            check_cols,
-            target_col,
-            model_name=model_name,
-            model_config=model_params,
-            feature_weights=feature_weights,
-        )
-        mlflow.log_metric("test_accuracy", metrics["accuracy"])
-        mlflow.log_metric("cv_accuracy", metrics["cv_accuracy"])
-        mlflow.log_metric("cv_f1score", metrics["cv_f1_score"])
-        mlflow.log_metric("cv_precision", metrics["cv_precision"])
-        mlflow.log_metric("cv_recall", metrics["cv_recall"])
-        return metrics
+        metrics_by_weighting = {}
+        for weighting in ("baseline", "weighted"):
+            metrics = cross_validate_model(
+                cv_folds_by_weighting[weighting],
+                target_col,
+                model_name=model_name,
+                model_config=model_params,
+            )
+            metrics_by_weighting[weighting] = metrics
+            for metric_name in (
+                "cv_auc",
+                "cv_f1score",
+                "cv_precision",
+                "cv_recall",
+                "cv_accuracy",
+            ):
+                mlflow.log_metric(
+                    f"{weighting}_{metric_name}", metrics[metric_name]
+                )
+        return metrics_by_weighting

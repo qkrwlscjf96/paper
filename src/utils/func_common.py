@@ -27,14 +27,14 @@ class FileReader(ABC):
 # CSV 전용 클래스
 class CSVReader(FileReader):
     def read(self) -> pd.DataFrame:
-        print(f"Reading CSV file: {self.filepath}")
+        print(f"[DATA] Reading CSV: {self.filepath}")
         return pd.read_csv(self.filepath).reset_index(drop=True)
 
 
 # Excel 전용 클래스
 class ExcelReader(FileReader):
     def read(self) -> pd.DataFrame:
-        print(f"Reading Excel file: {self.filepath}")
+        print(f"[DATA] Reading Excel: {self.filepath}")
         return pd.read_excel(self.filepath).reset_index(drop=True)
 
 
@@ -143,12 +143,8 @@ class PathConfig:
 
 @dataclass(frozen=True)
 class RunSwitches:
-    run_data_loader: bool
+    run_pipeline: bool
     run_eda: bool
-    run_analysis: bool
-    run_modeling: bool
-    effective_run_data_loader: bool
-    effective_run_analysis: bool
 
 
 @dataclass(frozen=True)
@@ -217,26 +213,15 @@ def load_pipeline_config(base_path: Path, user_inputs: dict[str, Any] | None = N
     if eda_output_subdir:
         eda_result_path = eda_result_path / eda_output_subdir
 
-    run_data_loader = _resolve_user_or_env(
-        user_inputs, ("steps", "run_data_loader"), "RUN_DATA_LOADER", True, lambda value: str(value) == "1" if isinstance(value, str) else bool(value)
+    run_pipeline = _resolve_user_or_env(
+        user_inputs, ("steps", "run_pipeline"), "RUN_PIPELINE", True, lambda value: str(value) == "1" if isinstance(value, str) else bool(value)
     )
     run_eda = _resolve_user_or_env(
-        user_inputs, ("steps", "run_eda"), "RUN_EDA", True, lambda value: str(value) == "1" if isinstance(value, str) else bool(value)
+        user_inputs, ("steps", "run_eda"), "RUN_EDA", False, lambda value: str(value) == "1" if isinstance(value, str) else bool(value)
     )
-    run_analysis = _resolve_user_or_env(
-        user_inputs, ("steps", "run_analysis"), "RUN_ANALYSIS", True, lambda value: str(value) == "1" if isinstance(value, str) else bool(value)
-    )
-    run_modeling = _resolve_user_or_env(
-        user_inputs, ("steps", "run_modeling"), "RUN_MODELING", True, lambda value: str(value) == "1" if isinstance(value, str) else bool(value)
-    )
-
     switches = RunSwitches(
-        run_data_loader=run_data_loader,
+        run_pipeline=run_pipeline,
         run_eda=run_eda,
-        run_analysis=run_analysis,
-        run_modeling=run_modeling,
-        effective_run_data_loader=run_data_loader or run_eda or run_analysis or run_modeling,
-        effective_run_analysis=run_analysis or run_eda or run_modeling,
     )
 
     static_version = _resolve_user_or_env(
@@ -373,21 +358,22 @@ def load_pipeline_config(base_path: Path, user_inputs: dict[str, Any] | None = N
         ).strip(),
         feature_importance_params={
             "feature_importance_f1_threshold": _resolve_user_or_env(
-                user_inputs, ("feature_importance", "f1_threshold"), "FEATURE_IMPORTANCE_F1_THRESHOLD", "0.0", float
+                user_inputs, ("feature_importance", "f1_threshold"), "FEATURE_IMPORTANCE_F1_THRESHOLD", "0.6", float
             ),
             "feature_importance_runs": _resolve_user_or_env(
                 user_inputs, ("feature_importance", "runs"), "FEATURE_IMPORTANCE_RUNS", "30", int
             ),
             "feature_importance_top_k": _resolve_user_or_env(
-                user_inputs, ("feature_importance", "top_k"), "FEATURE_IMPORTANCE_TOP_K", "10", int
+                user_inputs, ("feature_importance", "top_k"), "FEATURE_IMPORTANCE_TOP_K", "5", int
             ),
         },
         weight_params={
-            "baseline_index_mul": _resolve_user_or_env(
-                user_inputs, ("weighting", "baseline_index_mul"), "BASELINE_INDEX_MUL", "2", int
-            ),
-            "baseline_date_mul": _resolve_user_or_env(
-                user_inputs, ("weighting", "baseline_date_mul"), "BASELINE_DATE_MUL", "2", int
+            "sample_weight_mul": _resolve_user_or_env(
+                user_inputs,
+                ("weighting", "sample_weight_mul"),
+                "SAMPLE_WEIGHT_MUL",
+                "2.0",
+                float,
             ),
         },
         static_analysis=static_analysis,
@@ -466,21 +452,6 @@ def build_pipeline_child_run_tags(weighting: str, dataset_tags: dict) -> dict:
     }
 
 
-def build_pipeline_weighting_artifacts(weight_diagnostics: dict, weight_df) -> dict[str, object]:
-    artifacts = {
-        "index_weighted_rows": weight_diagnostics["index_weighted_rows"],
-        "date_feature_weighted_rows": weight_diagnostics["date_feature_weighted_rows"],
-        "feature_importance_weights": weight_diagnostics["feature_importance_weights"],
-        "weighting_summary": weight_diagnostics["weighting_summary"],
-        "weighted_data_preview": weight_df.head(100).copy(),
-    }
-    return {
-        name: artifact_df
-        for name, artifact_df in artifacts.items()
-        if artifact_df is not None
-    }
-
-
 def build_pipeline_model_test_configs(model_run_configs: list[dict], config: PipelineConfig) -> list[dict]:
     model_test_configs = []
     for model_run_config in model_run_configs:
@@ -493,34 +464,11 @@ def build_pipeline_model_test_configs(model_run_configs: list[dict], config: Pip
                 {
                     **model_run_config,
                     "weighting": "weighted",
-                    "index_mul": config.weight_params["baseline_index_mul"],
-                    "date_mul": config.weight_params["baseline_date_mul"],
+                    "sample_weight_mul": config.weight_params["sample_weight_mul"],
                 },
             ]
         )
     return model_test_configs
-
-
-def log_pipeline_comparison_metrics(metrics_by_weighting: dict, mlflow_module) -> None:
-    baseline_metrics = metrics_by_weighting.get("baseline")
-    weighted_metrics = metrics_by_weighting.get("weighted")
-    if baseline_metrics is None or weighted_metrics is None:
-        return
-
-    metric_pairs = {
-        "test_accuracy": "accuracy",
-        "cv_accuracy": "cv_accuracy",
-        "cv_f1score": "cv_f1_score",
-        "cv_precision": "cv_precision",
-        "cv_recall": "cv_recall",
-    }
-
-    for metric_name, source_key in metric_pairs.items():
-        baseline_value = baseline_metrics[source_key]
-        weighted_value = weighted_metrics[source_key]
-        mlflow_module.log_metric(f"baseline_{metric_name}", baseline_value)
-        mlflow_module.log_metric(f"weighted_{metric_name}", weighted_value)
-        mlflow_module.log_metric(f"delta_{metric_name}", weighted_value - baseline_value)
 
 
 def log_pipeline_run_configuration(
@@ -528,25 +476,17 @@ def log_pipeline_run_configuration(
     selected_data_names: list[str],
     selected_model_names: list[str],
 ) -> None:
-    if config.switches.run_modeling and not config.switches.run_analysis:
-        print("RUN_MODELING=1 이므로 모델링에 필요한 분석 단계도 함께 실행합니다.")
-    if config.switches.run_eda and not config.switches.run_analysis:
-        print("RUN_EDA=1 이므로 EDA 시각화에 필요한 분석 단계도 함께 실행합니다.")
-
-    print("Run config:")
+    print("[CONFIG] Run settings")
     print(
-        f"DATA_NAMES={selected_data_names}, "
-        f"RUN_DATA_LOADER={config.switches.run_data_loader}, "
-        f"RUN_EDA={config.switches.run_eda}, "
-        f"RUN_ANALYSIS={config.switches.run_analysis}, "
-        f"RUN_MODELING={config.switches.run_modeling}"
+        f"[CONFIG] datasets={selected_data_names} | "
+        f"pipeline={config.switches.run_pipeline} | eda={config.switches.run_eda}"
     )
-    print(f"MODEL_NAMES={selected_model_names}")
+    print(f"[CONFIG] models={selected_model_names}")
     print(
-        f"STATIC_VERSION={config.static_analysis.version}, "
-        f"FEATURE_IMPORTANCE_F1_THRESHOLD={config.feature_importance_params['feature_importance_f1_threshold']}, "
-        f"FEATURE_IMPORTANCE_RUNS={config.feature_importance_params['feature_importance_runs']}, "
-        f"FEATURE_IMPORTANCE_TOP_K={config.feature_importance_params['feature_importance_top_k']}"
+        f"[CONFIG] static={config.static_analysis.version} | "
+        f"fi_threshold={config.feature_importance_params['feature_importance_f1_threshold']} | "
+        f"fi_runs={config.feature_importance_params['feature_importance_runs']} | "
+        f"top_k={config.feature_importance_params['feature_importance_top_k']}"
     )
 
     params = config.static_analysis.params
@@ -569,9 +509,8 @@ def log_pipeline_run_configuration(
             f"PELT_MIN_EFFECT_SIZE={params['pelt_min_effect_size']}"
         )
 
-    if config.switches.run_modeling:
-        print(f"BASELINE_INDEX_MUL={config.weight_params['baseline_index_mul']}")
-        print(f"BASELINE_DATE_MUL={config.weight_params['baseline_date_mul']}")
+    if config.switches.run_pipeline:
+        print(f"[CONFIG] sample_weight_mul={config.weight_params['sample_weight_mul']}")
 
 
 def run_pipeline_statistical_analysis(df, target_col: str, check_cols: list[str], config: PipelineConfig) -> dict:
@@ -580,7 +519,7 @@ def run_pipeline_statistical_analysis(df, target_col: str, check_cols: list[str]
         from utils.func_feat_imp import xgboost_feature_importance
 
         print(
-            "Feature importance config: "
+            "[ANALYSIS] Feature importance: "
             f"f1_threshold={config.feature_importance_params['feature_importance_f1_threshold']}, "
             f"runs={config.feature_importance_params['feature_importance_runs']}, "
             f"top_k={config.feature_importance_params['feature_importance_top_k']}"
@@ -594,16 +533,27 @@ def run_pipeline_statistical_analysis(df, target_col: str, check_cols: list[str]
             top_k=config.feature_importance_params["feature_importance_top_k"],
         )
     except ModuleNotFoundError as exc:
-        print(f"Feature importance skipped: {exc}")
+        print(f"[ANALYSIS] Feature importance skipped: {exc}")
+
+    top_k = config.feature_importance_params["feature_importance_top_k"]
+    if feature_importance_result is not None and not feature_importance_result.empty:
+        selected_features = (
+            feature_importance_result.head(top_k)["FEATURE"].tolist()
+        )
+    else:
+        selected_features = list(check_cols[:top_k])
+    if not selected_features:
+        raise ValueError("No features are available for statistical analysis")
+    print(f"[ANALYSIS] Selected features ({len(selected_features)}): {selected_features}")
 
     params = config.static_analysis.params
     if config.static_analysis.version == "v1":
         print(
-            "IQR config: "
+            "[ANALYSIS] IQR: "
             f"directional_corr_threshold={params['iqr_directional_corr_threshold']}"
         )
         print(
-            "Anchor window config: "
+            "[ANALYSIS] Anchor window: "
             f"context_days={params['anchor_context_days']}, "
             f"min_window_points={params['anchor_min_window_points']}, "
             f"min_rate_quantile={params['anchor_min_rate_quantile']}, "
@@ -613,13 +563,13 @@ def run_pipeline_statistical_analysis(df, target_col: str, check_cols: list[str]
         static_idx_result, static_idx_detail_result = config.static_analysis.index_fn(
             df,
             target_col,
-            check_cols,
+            selected_features,
             directional_corr_threshold=params["iqr_directional_corr_threshold"],
             return_details=True,
         )
         static_date_result = config.static_analysis.date_fn(
             df,
-            check_cols,
+            selected_features,
             target_col,
             context_days=params["anchor_context_days"],
             min_window_points=params["anchor_min_window_points"],
@@ -629,12 +579,12 @@ def run_pipeline_statistical_analysis(df, target_col: str, check_cols: list[str]
         )
     else:
         print(
-            "Global scatter config: "
+            "[ANALYSIS] P-chart: "
             f"sigma_level={params['p_chart_sigma_level']}, "
             f"min_outlier_features={params['p_chart_min_subgroup_size']}"
         )
         print(
-            "PELT date trend config: "
+            "[ANALYSIS] PELT: "
             f"penalty_scale={params['pelt_penalty_scale']}, "
             f"min_segment_size={params['pelt_min_segment_size']}, "
             f"change_point_tolerance_days={params['pelt_change_point_tolerance_days']}, "
@@ -643,14 +593,14 @@ def run_pipeline_statistical_analysis(df, target_col: str, check_cols: list[str]
         static_idx_result, static_idx_detail_result = config.static_analysis.index_fn(
             df,
             target_col,
-            check_cols=check_cols,
+            check_cols=selected_features,
             sigma_level=params["p_chart_sigma_level"],
             min_outlier_features=params["p_chart_min_subgroup_size"],
             return_details=True,
         )
         static_date_result = config.static_analysis.date_fn(
             df,
-            check_cols,
+            selected_features,
             target_col,
             penalty_scale=params["pelt_penalty_scale"],
             min_segment_size=params["pelt_min_segment_size"],
@@ -660,6 +610,7 @@ def run_pipeline_statistical_analysis(df, target_col: str, check_cols: list[str]
 
     return {
         "feature_importance_result": feature_importance_result,
+        "selected_features": selected_features,
         "static_idx_result": static_idx_result,
         "static_idx_detail_result": static_idx_detail_result,
         "static_date_result": static_date_result,

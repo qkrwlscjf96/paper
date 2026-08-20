@@ -1,4 +1,3 @@
-import json
 import os
 
 import numpy as np
@@ -8,13 +7,12 @@ from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
-    classification_report,
-    confusion_matrix,
     f1_score,
     precision_score,
     recall_score,
+    roc_auc_score,
 )
-from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.model_selection import StratifiedKFold
 from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler
 
@@ -190,10 +188,8 @@ def _prepare_features(
     X_train,
     X_other,
     model_name: str,
-    check_cols: list[str],
-    feature_weights: dict[str, float] | None = None,
 ):
-    """Fit preprocessing on train only and apply feature weights afterwards."""
+    """Fit scaling on fold train only when the model requires it."""
     if model_name in SCALE_REQUIRED_MODELS:
         scaler = StandardScaler()
         train_values = scaler.fit_transform(X_train)
@@ -202,59 +198,68 @@ def _prepare_features(
         train_values = X_train.to_numpy(copy=True)
         other_values = X_other.to_numpy(copy=True)
 
-    weights = np.array(
-        [(feature_weights or {}).get(column, 1.0) for column in check_cols],
-        dtype=float,
+    return train_values, other_values
+
+
+def build_stratified_cv_folds(
+    train_df,
+    target_col: list[str],
+    n_splits: int = 5,
+    random_state: int = 42,
+) -> list[dict]:
+    """Materialize fixed fold frames so every candidate uses identical rows."""
+    y_train = train_df[target_col[0]]
+    kfold = StratifiedKFold(
+        n_splits=n_splits, shuffle=True, random_state=random_state
     )
-    return train_values * weights, other_values * weights
+    return [
+        {
+            "train_df": train_df.iloc[fold_train_idx].reset_index(drop=True),
+            "valid_df": train_df.iloc[fold_valid_idx].reset_index(drop=True),
+        }
+        for fold_train_idx, fold_valid_idx in kfold.split(train_df, y_train)
+    ]
 
 
-def model_training(
-    df,
-    check_cols,
+def cross_validate_model(
+    cv_folds: list[dict],
     target_col,
     model_name: str = "MLPClassifier",
     model_config: dict | None = None,
-    feature_weights: dict[str, float] | None = None,
 ):
-    # Feature / Target 분리
-    X = df[check_cols]
-    y = df[target_col[0]]
-
-    # 1차 분리: train:test = 7:3
-    X_train_full, X_test, y_train_full, y_test = train_test_split(
-        X,
-        y,
-        test_size=0.3,
-        shuffle=True,
-        random_state=42,
-        stratify=y,
-    )
-
-    X_train, y_train = X_train_full, y_train_full
-    print(f"Train size: {len(X_train)}, Test size: {len(X_test)}")
-
-    # Train 데이터에 대해서만 Stratified K-Fold 적용
-    kfold = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    if not cv_folds:
+        raise ValueError("cv_folds must not be empty")
+    cv_aucs = []
     cv_accuracies = []
     cv_f1_scores = []
     cv_precisions = []
     cv_recalls = []
-    metric_average = _get_metric_average(y_train)
 
-    for fold_idx, (train_idx, valid_idx) in enumerate(kfold.split(X_train, y_train), start=1):
-        X_fold_train = X_train.iloc[train_idx]
-        X_fold_valid = X_train.iloc[valid_idx]
-        y_fold_train = y_train.iloc[train_idx]
-        y_fold_valid = y_train.iloc[valid_idx]
+    for fold_idx, fold in enumerate(cv_folds, start=1):
+        fold_train_df = fold["train_df"]
+        fold_valid_df = fold["valid_df"]
+        fold_check_cols = fold["check_cols"]
+        X_fold_train = fold_train_df[fold_check_cols]
+        X_fold_valid = fold_valid_df[fold_check_cols]
+        y_fold_train = fold_train_df[target_col[0]]
+        y_fold_valid = fold_valid_df[target_col[0]]
+        metric_average = _get_metric_average(y_fold_train)
 
         X_fold_train_scaled, X_fold_valid_scaled = _prepare_features(
-            X_fold_train, X_fold_valid, model_name, check_cols, feature_weights
+            X_fold_train, X_fold_valid, model_name
         )
 
         model = clone(_build_model(model_name, model_config))
-        model.fit(X_fold_train_scaled, y_fold_train)
+        fit_kwargs = {}
+        if fold.get("sample_weight") is not None:
+            fit_kwargs["sample_weight"] = np.asarray(fold["sample_weight"], dtype=float)
+        model.fit(X_fold_train_scaled, y_fold_train, **fit_kwargs)
         y_fold_pred = model.predict(X_fold_valid_scaled)
+        y_fold_score = model.predict_proba(X_fold_valid_scaled)[:, 1]
+        fold_auc = _validate_unit_interval(
+            f"{model_name}.fold_{fold_idx}.auc",
+            roc_auc_score(y_fold_valid, y_fold_score),
+        )
         fold_accuracy = _validate_unit_interval(
             f"{model_name}.fold_{fold_idx}.accuracy",
             accuracy_score(y_fold_valid, y_fold_pred),
@@ -275,61 +280,36 @@ def model_training(
                 y_fold_valid, y_fold_pred, average=metric_average, zero_division=0
             ),
         )
+        cv_aucs.append(float(fold_auc))
         cv_accuracies.append(float(fold_accuracy))
         cv_f1_scores.append(float(fold_f1))
         cv_precisions.append(float(fold_precision))
         cv_recalls.append(float(fold_recall))
-        print(f"Fold {fold_idx} Accuracy: {fold_accuracy}")
-        print(f"Fold {fold_idx} F1 score: {fold_f1}")
-        print(f"Fold {fold_idx} Precision: {fold_precision}")
-        print(f"Fold {fold_idx} Recall: {fold_recall}")
+        print(
+            f"[CV {fold_idx}/{len(cv_folds)}] "
+            f"auc={fold_auc:.4f} | f1={fold_f1:.4f} | "
+            f"precision={fold_precision:.4f} | recall={fold_recall:.4f} | "
+            f"accuracy={fold_accuracy:.4f}"
+        )
 
-    print(f"K-Fold Accuracy Mean: {np.mean(cv_accuracies):.4f}")
-    print(f"K-Fold F1 score Mean: {np.mean(cv_f1_scores):.4f}")
-    print(f"K-Fold Precision Mean: {np.mean(cv_precisions):.4f}")
-    print(f"K-Fold Recall Mean: {np.mean(cv_recalls):.4f}")
-
-    # 최종 모델 학습
-    X_train_scaled, X_test_scaled = _prepare_features(
-        X_train, X_test, model_name, check_cols, feature_weights
+    print(
+        f"[RESULT] cv_auc={np.mean(cv_aucs):.4f} | "
+        f"cv_f1score={np.mean(cv_f1_scores):.4f} | "
+        f"cv_precision={np.mean(cv_precisions):.4f} | "
+        f"cv_recall={np.mean(cv_recalls):.4f} | "
+        f"cv_accuracy={np.mean(cv_accuracies):.4f}"
     )
 
-    final_model = _build_model(model_name, model_config)
-    final_model.fit(X_train_scaled, y_train)
-
-    # Test 예측
-    y_test_pred = final_model.predict(X_test_scaled)
-    test_accuracy = _validate_unit_interval(
-        f"{model_name}.test_accuracy",
-        accuracy_score(y_test, y_test_pred),
-    )
-    confusion = confusion_matrix(y_test, y_test_pred)
-    report_dict = classification_report(y_test, y_test_pred, output_dict=True)
-    report_text = classification_report(y_test, y_test_pred)
-
-    print("Test Accuracy:", test_accuracy)
-    print(confusion)
-    print(report_text)
-
+    cv_auc = _validate_unit_interval(f"{model_name}.cv_auc", np.mean(cv_aucs))
     cv_accuracy = _validate_unit_interval(f"{model_name}.cv_accuracy", np.mean(cv_accuracies))
     cv_f1_score_mean = _validate_unit_interval(f"{model_name}.cv_f1_score", np.mean(cv_f1_scores))
     cv_precision_mean = _validate_unit_interval(f"{model_name}.cv_precision", np.mean(cv_precisions))
     cv_recall_mean = _validate_unit_interval(f"{model_name}.cv_recall", np.mean(cv_recalls))
 
     return {
-        "accuracy": float(test_accuracy),
-        "cv_accuracy": cv_accuracy,
-        "cv_f1_score": cv_f1_score_mean,
+        "cv_auc": cv_auc,
+        "cv_f1score": cv_f1_score_mean,
         "cv_precision": cv_precision_mean,
         "cv_recall": cv_recall_mean,
-        "cv_fold_accuracies": cv_accuracies,
-        "cv_fold_f1_scores": cv_f1_scores,
-        "cv_fold_precisions": cv_precisions,
-        "cv_fold_recalls": cv_recalls,
-        "confusion_matrix": confusion.tolist(),
-        "classification_report": report_dict,
-        "classification_report_text": report_text,
-        "model_name": model_name,
-        "scaling_applied": model_name in SCALE_REQUIRED_MODELS,
-        "model_params": json.loads(json.dumps(final_model.get_params(), default=str)),
+        "cv_accuracy": cv_accuracy,
     }

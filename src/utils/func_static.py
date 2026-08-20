@@ -2,6 +2,30 @@ import numpy as np
 import pandas as pd
 
 
+def _safe_pearson_corr(left: pd.Series, right: pd.Series) -> float:
+    """Return Pearson correlation without warnings for constant/invalid series."""
+    paired = pd.concat(
+        [pd.to_numeric(left, errors="coerce"), pd.to_numeric(right, errors="coerce")],
+        axis=1,
+    ).replace([np.inf, -np.inf], np.nan).dropna()
+    if len(paired) < 2:
+        return np.nan
+
+    left_values = paired.iloc[:, 0].to_numpy(dtype=float)
+    right_values = paired.iloc[:, 1].to_numpy(dtype=float)
+    left_centered = left_values - left_values.mean()
+    right_centered = right_values - right_values.mean()
+    denominator = np.sqrt(
+        np.dot(left_centered, left_centered)
+        * np.dot(right_centered, right_centered)
+    )
+    if not np.isfinite(denominator) or denominator <= np.finfo(float).tiny:
+        return np.nan
+
+    correlation = np.dot(left_centered, right_centered) / denominator
+    return float(np.clip(correlation, -1.0, 1.0))
+
+
 def _ensure_date_series(df: pd.DataFrame, date_col: str = "DATE") -> pd.DataFrame:
     result = df.copy()
     result[date_col] = pd.to_datetime(result[date_col])
@@ -77,8 +101,8 @@ class FuncStaticV1:
             valid = full_df[[col, target_col]].dropna()
             corr = np.nan
 
-            if len(valid) >= 2 and valid[col].nunique() >= 2 and valid[target_col].nunique() >= 2:
-                corr = valid[col].corr(valid[target_col], method="pearson")
+            if len(valid) >= 2:
+                corr = _safe_pearson_corr(valid[col], valid[target_col])
 
             if pd.isna(corr) or abs(corr) < directional_corr_threshold:
                 continue
@@ -209,7 +233,7 @@ class FuncStaticV1:
                 if len(valid) < min_window_points:
                     continue
 
-                corr = valid["daily_mean"].corr(valid["defect_rate"])
+                corr = _safe_pearson_corr(valid["daily_mean"], valid["defect_rate"])
                 align_sign = -1 if pd.notna(corr) and corr < 0 else 1
                 feature_state = "low" if align_sign < 0 else "high"
 
@@ -231,7 +255,7 @@ class FuncStaticV1:
                 if defect_delta.nunique() < 2 or feature_delta.nunique() < 2:
                     pattern_corr = 0.0
                 else:
-                    pattern_corr = defect_delta.corr(feature_delta)
+                    pattern_corr = _safe_pearson_corr(defect_delta, feature_delta)
                     if pd.isna(pattern_corr):
                         pattern_corr = 0.0
 
@@ -531,7 +555,7 @@ class FuncStaticV2:
             if not feature_cp_idx:
                 continue
 
-            corr = merged["feature_mean"].corr(merged["defect_rate"])
+            corr = _safe_pearson_corr(merged["feature_mean"], merged["defect_rate"])
 
             for defect_cp in defect_cp_idx:
                 defect_cp_date = merged.iloc[defect_cp][date_col]

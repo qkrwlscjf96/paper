@@ -8,9 +8,9 @@ def xgboost_feature_importance(
     full_df: pd.DataFrame,
     target_col: list,
     check_cols: list,
-    f1_threshold: float = 0.0,
+    f1_threshold: float = 0.6,
     n_runs: int = 30,
-    top_k: int = 10,
+    top_k: int = 5,
 ) -> pd.DataFrame:
     """XGBoost 기반 feature importance를 반복 실행 후 집계한다."""
 
@@ -83,13 +83,12 @@ def xgboost_feature_importance(
     if selected_run_count == 0:
         threshold_message = f"F1 threshold {f1_threshold} 이상인 실행이 없어 "
         print(
-            f"{threshold_message}최고 {score_label} 실행 결과를 사용합니다. "
+            f"[FEATURE] {threshold_message}최고 {score_label} 실행 결과를 사용합니다. "
             f"(best_{score_label.lower()}={best_run_score:.4f})"
         )
         if best_run_importance is None:
             return pd.DataFrame(columns=["FEATURE", "importance"])
-        print("Feature Importance 분석 결과:")
-        print(best_run_importance)
+        print(f"[FEATURE] Using best run with {len(best_run_importance)} ranked features")
         return best_run_importance
 
     summary_rows = []
@@ -114,11 +113,10 @@ def xgboost_feature_importance(
         .reset_index(drop=True)
     )
 
-    print("Feature Importance 분석 결과:")
     threshold_summary = f"F1 threshold={f1_threshold}"
     print(
-        f"총 실행 수={n_runs}, {threshold_summary}, "
-        f"채택 실행 수={selected_run_count}, 평균 {score_label}={sum(run_scores) / len(run_scores):.4f}"
+        f"[FEATURE] runs={n_runs} | {threshold_summary} | "
+        f"accepted={selected_run_count} | mean_{score_label.lower()}="
+        f"{sum(run_scores) / len(run_scores):.4f}"
     )
-    print(importance_df)
     return importance_df

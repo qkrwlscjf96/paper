@@ -1,5 +1,7 @@
 #%%
 import sys
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -7,27 +9,22 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from utils.func_common import (
-    build_pipeline_child_run_params,
-    build_pipeline_child_run_tags,
     build_pipeline_dataset_tags,
     build_pipeline_experiment_name,
-    build_pipeline_model_test_configs,
-    build_pipeline_parent_run_params,
-    build_pipeline_weighting_artifacts,
     load_data_df,
     load_pipeline_config,
-    log_pipeline_comparison_metrics,
     log_pipeline_run_configuration,
     resolve_pipeline_data_names,
     run_pipeline_statistical_analysis,
 )
 from utils.func_eda import generate_eda_outputs
 from utils.func_model import (
+    build_stratified_cv_folds,
     get_model_run_configs_from_env,
     resolve_model_config,
     resolve_model_names,
 )
-from utils.func_weight import get_weighted_df
+from utils.func_weight import build_statistical_sample_weights
 
 
 BASE_PATH = Path(__file__).resolve().parent.parent
@@ -45,15 +42,13 @@ USER_INPUTS = {
         "experiment_prefix": "model-weighting-comparison",
     },
     "steps": {
-        "run_data_loader": True,
-        "run_analysis": True,
-        "run_eda": True,
-        "run_modeling": False,
+        "run_pipeline": True,
+        "run_eda": False,
     },
     "feature_importance": {
-        "f1_threshold": 0.0,
+        "f1_threshold": 0.6,
         "runs": 30,
-        "top_k": 10,
+        "top_k": 5,
     },
     "static": {
         "version": "v2",  # "v1" or "v2"
@@ -75,8 +70,7 @@ USER_INPUTS = {
         },
     },
     "weighting": {
-        "baseline_index_mul": 2,
-        "baseline_date_mul": 2,
+        "sample_weight_mul": 2.0,
     },
 }
 
@@ -89,19 +83,15 @@ SELECTED_DATA_NAMES = resolve_pipeline_data_names(
     data_path=CONFIG.paths.data_path,
 )
 
-if CONFIG.switches.run_modeling:
+if CONFIG.switches.run_pipeline:
     from utils.func_mlflow import (
         configure_mlflow,
-        get_mlflow_config,
-        log_dataframe_artifact,
-        run_and_log_model,
+        run_and_log_cv_model,
     )
-
-    import mlflow
 
 
 def load_dataset(data_name: str):
-    print("\n[1] Data loader")
+    print(f"[DATA] Loading dataset: {data_name}")
     return load_data_df(
         data_name=data_name,
         data_path=CONFIG.paths.data_path,
@@ -109,7 +99,7 @@ def load_dataset(data_name: str):
 
 
 def run_analysis(df, target_col: list[str], check_cols: list[str]) -> dict:
-    print("\n[2] Feature importance + Statistical analysis")
+    print("[EDA] Running full-dataset analysis")
     return run_pipeline_statistical_analysis(
         df=df,
         target_col=target_col[0],
@@ -125,9 +115,9 @@ def run_eda(
     target_col: list[str],
     analysis_results: dict,
 ) -> None:
-    print("\n[3] EDA")
+    print("[EDA] Generating outputs")
     eda_output_dir = CONFIG.paths.eda_result_path / CONFIG.static_analysis.version / data_name
-    print(f"EDA output_dir={eda_output_dir}")
+    print(f"[EDA] Output directory: {eda_output_dir}")
     generate_eda_outputs(
         df=df,
         check_cols=check_cols,
@@ -140,184 +130,153 @@ def run_eda(
     )
 
 
-def run_modeling(
+def prepare_modeling_folds(df, target_col: list[str], check_cols: list[str]):
+    """Prepare identical baseline/weighted CV folds without validation leakage."""
+    baseline_folds = build_stratified_cv_folds(df, target_col)
+    weighted_folds = []
+    diagnostics = []
+
+    for fold_number, baseline_fold in enumerate(baseline_folds, start=1):
+        fold_train_df = baseline_fold["train_df"]
+        with redirect_stdout(StringIO()):
+            analysis = run_pipeline_statistical_analysis(
+                df=fold_train_df,
+                target_col=target_col[0],
+                check_cols=check_cols,
+                config=CONFIG,
+            )
+        selected_features = analysis["selected_features"]
+        sample_weights, fold_diagnostics = build_statistical_sample_weights(
+            fold_train_df,
+            analysis["static_idx_result"],
+            analysis["static_date_result"],
+            weight_mul=CONFIG.weight_params["sample_weight_mul"],
+        )
+        weighted_rows = int((sample_weights > 1.0).sum())
+        static_row_count = (
+            analysis["static_idx_result"]["INDEX"].nunique()
+            if not analysis["static_idx_result"].empty
+            else 0
+        )
+        date_feature_count = len(analysis["static_date_result"])
+        index_method = "IQR" if CONFIG.static_analysis.version == "v1" else "P-chart"
+        date_method = "high-defect" if CONFIG.static_analysis.version == "v1" else "PELT"
+        print(
+            f"[FOLD {fold_number}/{len(baseline_folds)}] "
+            f"features={selected_features} | "
+            f"{index_method}_rows={static_row_count} | "
+            f"{date_method}_date_feature_pairs={date_feature_count} | "
+            f"weighted_rows={weighted_rows}/{len(fold_train_df)}"
+        )
+
+        baseline_fold["check_cols"] = selected_features
+        weighted_folds.append(
+            {
+                "train_df": fold_train_df,
+                "valid_df": baseline_fold["valid_df"],
+                "check_cols": selected_features,
+                "sample_weight": sample_weights,
+            }
+        )
+        diagnostics.append(fold_diagnostics)
+
+    return {"baseline": baseline_folds, "weighted": weighted_folds}, diagnostics
+
+
+def configure_tracking(data_name: str) -> None:
+    experiment_name = build_pipeline_experiment_name(
+        data_name=data_name,
+        experiment_name=CONFIG.experiment_name,
+        experiment_prefix=CONFIG.experiment_prefix,
+    )
+    mlflow_config = configure_mlflow(
+        base_path=CONFIG.paths.base_path,
+        experiment_name=experiment_name,
+    )
+    print(f"[MLFLOW] Tracking URI: {mlflow_config['tracking_uri']}")
+    print(f"[MLFLOW] Experiment: {mlflow_config['resolved_experiment_name']}")
+
+
+def run_cv_comparison(
     data_name: str,
     df,
     ng_df,
     target_col: list[str],
     check_cols: list[str],
     date_col: list[str],
-    analysis_results: dict,
 ) -> None:
-    print("\n[MLflow] Setup")
-    mlflow_config = get_mlflow_config(base_path=CONFIG.paths.base_path)
-    print(f"MLflow tracking_dir: {mlflow_config['tracking_dir']}")
-    print(f"MLflow artifact_dir: {mlflow_config['artifact_dir']}")
-    print(f"MLflow tracking_uri: {mlflow_config['tracking_uri']}")
-
-    experiment_name = build_pipeline_experiment_name(
-        data_name=data_name,
-        experiment_name=CONFIG.experiment_name,
-        experiment_prefix=CONFIG.experiment_prefix,
+    print("[PIPELINE] Starting fold-local baseline/weighted CV")
+    configure_tracking(data_name)
+    cv_folds_by_weighting, weighting_diagnostics = prepare_modeling_folds(
+        df, target_col, check_cols
     )
-    print(f"MLflow experiment_name: {experiment_name}")
-    mlflow_config = configure_mlflow(
-        base_path=CONFIG.paths.base_path,
-        experiment_name=experiment_name,
-    )
-    if mlflow_config.get("resolved_experiment_name") != experiment_name:
-        print(f"MLflow resolved_experiment_name: {mlflow_config['resolved_experiment_name']}")
-
-    print("\n[4] Modeling")
     model_run_configs = get_model_run_configs_from_env(data_name=data_name)
-    dataset_tags = build_pipeline_dataset_tags(data_name, df, ng_df, check_cols, date_col)
-    selected_run = None
-
-    weight_df, weight_diagnostics = get_weighted_df(
-        df,
-        check_cols,
-        CONFIG.weight_params["baseline_index_mul"],
-        CONFIG.weight_params["baseline_date_mul"],
-        analysis_results["static_idx_result"],
-        analysis_results["static_date_result"],
-        feature_importance_result=(
-            analysis_results["feature_importance_result"].copy()
-            if analysis_results["feature_importance_result"] is not None
-            else None
-        ),
-        return_diagnostics=True,
-    )
-
-    model_test_configs = build_pipeline_model_test_configs(model_run_configs, CONFIG)
-
-    for model_run_config in model_run_configs:
-        parent_run_params = build_pipeline_parent_run_params(model_run_config, CONFIG)
-        model_name = model_run_config["model_name"]
-
-        with mlflow.start_run(run_name=model_name):
-            mlflow.log_params(parent_run_params)
-            mlflow.set_tags(
-                {
-                    **dataset_tags,
-                    "stage": "comparison",
-                    "comparison_group": "baseline_vs_weighted",
-                    "experiment_role": "parent",
-                    "model_name": model_name,
-                }
-            )
-            log_dataframe_artifact(
-                weight_diagnostics["weighting_summary"],
-                artifact_path="weighting_details",
-                filename="weighting_summary.csv",
-            )
-
-            metrics_by_weighting = {}
-            for test_config in model_test_configs:
-                if test_config["model_name"] != model_name:
-                    continue
-
-                weighting = test_config["weighting"]
-                df_to_train = weight_df if weighting == "weighted" else df
-                artifact_dataframes = None
-                if weighting == "weighted":
-                    artifact_dataframes = build_pipeline_weighting_artifacts(weight_diagnostics, weight_df)
-                feature_weights = None
-                if weighting == "weighted" and not weight_diagnostics["feature_importance_weights"].empty:
-                    feature_weights = dict(
-                        zip(
-                            weight_diagnostics["feature_importance_weights"]["FEATURE"],
-                            weight_diagnostics["feature_importance_weights"]["WEIGHT"],
-                        )
-                    )
-
-                print("\n")
-                message = f"{model_name} / {weighting} 모델 학습결과: data_name={data_name}"
-                if weighting == "weighted":
-                    message += (
-                        f", index_mul={test_config['index_mul']}, "
-                        f"date_mul={test_config['date_mul']}"
-                    )
-                print(message)
-
-                run_name = (
-                    f"{model_name}-baseline"
-                    if weighting == "baseline"
-                    else f"{model_name}-weighted"
-                )
-                metrics = run_and_log_model(
-                    run_name=run_name,
-                    df_to_train=df_to_train,
-                    check_cols=check_cols,
-                    target_col=target_col,
-                    model_name=model_name,
-                    model_params=resolve_model_config(model_run_config),
-                    params=build_pipeline_child_run_params(model_run_config, test_config, CONFIG),
-                    tags={
-                        **build_pipeline_child_run_tags(weighting, dataset_tags),
-                        "model_name": model_name,
-                    },
-                    artifact_dataframes=artifact_dataframes,
-                    feature_weights=feature_weights,
-                    nested=True,
-                )
-                metrics_by_weighting[weighting] = metrics
-
-                if selected_run is None or metrics["cv_accuracy"] > selected_run["cv_accuracy"]:
-                    selected_run = {
-                        "data_name": data_name,
-                        "model_name": model_name,
-                        "run_name": run_name,
-                        "cv_accuracy": metrics["cv_accuracy"],
-                        "index_mul": test_config.get("index_mul"),
-                        "date_mul": test_config.get("date_mul"),
-                        "params": test_config.copy(),
-                    }
-
-            log_pipeline_comparison_metrics(metrics_by_weighting, mlflow)
-
-    print("\nSelected run summary:")
-    print(selected_run)
-
-
-def run_pipeline_for_data(data_name: str) -> None:
-    print("\n" + "=" * 80)
-    print(f"DATASET: {data_name}")
-    print("=" * 80)
-
-    df = ng_df = target_col = check_cols = date_col = None
-    analysis_results = {
-        "feature_importance_result": None,
-        "static_idx_result": None,
-        "static_idx_detail_result": None,
-        "static_date_result": None,
+    dataset_tags = {
+        **build_pipeline_dataset_tags(data_name, df, ng_df, check_cols, date_col),
+        "evaluation_method": "fold_local_weighting_5_fold_cv",
+        "independent_test_set": "false",
     }
 
-    if CONFIG.switches.effective_run_data_loader:
-        df, ng_df, target_col, check_cols, date_col = load_dataset(data_name)
-    else:
-        print("\n[1] Data loader skipped")
+    for model_run_config in model_run_configs:
+        model_name = model_run_config["model_name"]
+        model_params = resolve_model_config(model_run_config)
+        run_params = {
+            **model_run_config,
+            **CONFIG.analysis_params,
+            **CONFIG.weight_params,
+        }
 
-    if CONFIG.switches.effective_run_analysis:
-        analysis_results = run_analysis(df, target_col, check_cols)
-    else:
-        print("\n[2] Feature importance + Statistical analysis skipped")
+        print(
+            f"[MODEL] {model_name} | baseline vs weighted | dataset={data_name}"
+            f" | sample_weight_mul={CONFIG.weight_params['sample_weight_mul']}"
+        )
+        artifacts = {
+            f"fold_{fold_number}_sample_weights": fold_diagnostics
+            for fold_number, fold_diagnostics in enumerate(
+                weighting_diagnostics, start=1
+            )
+        }
+        run_and_log_cv_model(
+            run_name=model_name,
+            cv_folds_by_weighting=cv_folds_by_weighting,
+            target_col=target_col,
+            model_name=model_name,
+            model_params=model_params,
+            params=run_params,
+            tags={
+                **dataset_tags,
+                "stage": "modeling",
+                "comparison_group": "baseline_vs_weighted",
+                "model_name": model_name,
+                "evaluation_phase": "fold_local_weighting_cv",
+            },
+            artifact_dataframes=artifacts,
+        )
+    print(f"[PIPELINE] Completed dataset: {data_name}")
 
+
+def run_dataset(data_name: str) -> None:
+    print("\n" + "=" * 72)
+    print(f"[DATASET] {data_name}")
+    print("=" * 72)
+
+    if not (CONFIG.switches.run_pipeline or CONFIG.switches.run_eda):
+        print("[SKIP] RUN_PIPELINE=0 and RUN_EDA=0")
+        return
+
+    df, ng_df, target_col, check_cols, date_col = load_dataset(data_name)
     if CONFIG.switches.run_eda:
+        analysis_results = run_analysis(df, target_col, check_cols)
         run_eda(data_name, df, check_cols, target_col, analysis_results)
-    else:
-        print("\n[3] EDA skipped")
 
-    if CONFIG.switches.run_modeling:
-        run_modeling(data_name, df, ng_df, target_col, check_cols, date_col, analysis_results)
-    else:
-        print("\n[MLflow] Setup skipped")
-        print("\n[4] Modeling skipped")
+    if CONFIG.switches.run_pipeline:
+        run_cv_comparison(data_name, df, ng_df, target_col, check_cols, date_col)
 
 
 def main() -> None:
     log_pipeline_run_configuration(CONFIG, SELECTED_DATA_NAMES, SELECTED_MODEL_NAMES)
     for data_name in SELECTED_DATA_NAMES:
-        run_pipeline_for_data(data_name)
+        run_dataset(data_name)
 
 
 if __name__ == "__main__":
