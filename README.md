@@ -261,12 +261,13 @@ Windows (PowerShell):
 
 ```powershell
 docker run --rm `
+  -v "${PWD}/result:/app/result" `
   -e EXPERIMENT_PREFIX="[static_v1_260820]" `
   -e DATA_NAMES="all" `
   -e MODEL_NAMES="all" `
   -e STATIC_VERSION="v1" `
-  -e RUN_PIPELINE=1 `
-  -e RUN_EDA=0 `
+  -e RUN_PIPELINE=0 `
+  -e RUN_EDA=1 `
   -e MLFLOW_TRACKING_URI="http://host.docker.internal:5001" `
   --name thesis-model `
   thesis-model
@@ -280,8 +281,8 @@ docker run --rm \
   -e DATA_NAMES="all" \
   -e MODEL_NAMES="all" \
   -e STATIC_VERSION="v1" \
-  -e RUN_PIPELINE=1 \
-  -e RUN_EDA=0 \
+  -e RUN_PIPELINE=0 \
+  -e RUN_EDA=1 \
   -e MLFLOW_TRACKING_URI="http://host.docker.internal:5001" \
   --name thesis-model \
   thesis-model
